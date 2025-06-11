@@ -1,0 +1,10 @@
+version: '3.7'
+
+networks:
+  food-ordering-system:
+    driver: bridge
+  
+
+  kafka:
+    driver: bridge
+    name: ${GLOBAL_NETWORK:-kafka}

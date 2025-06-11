@@ -1,0 +1,160 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:${KAFKA_VERSION:-latest}
+    hostname: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_SERVER_ID: 1
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_INIT_LIMIT: 5
+      ZOOKEEPER_SYNC_LIMIT: 2
+      ZOOKEEPER_SERVERS: zookeeper:2888:3888
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok"
+    volumes:
+      - "./volumes/zookeeper/data:/var/lib/zookeeper/data"
+      - "./volumes/zookeeper/transactions:/var/lib/zookeeper/log"
+    networks:
+      - ${GLOBAL_NETWORK:-kafka}
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:${KAFKA_VERSION}
+    hostname: schema-registry
+    depends_on:
+      - zookeeper
+      - kafka-broker-1
+      - kafka-broker-2
+      - kafka-broker-3
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_CONNECTION_URL: "zookeeper:2181"
+      SCHEMA_REGISTRY_LISTENERS: http://schema-registry:8081
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka-broker-1:9092,PLAINTEXT://kafka-broker-2:9092,PLAINTEXT://kafka-broker-3:9092
+      SCHEMA_REGISTRY_DEBUG: "true"
+    networks:
+      - ${GLOBAL_NETWORK:-kafka}
+
+  kafka-broker-1:
+    image: confluentinc/cp-kafka:${KAFKA_VERSION}
+    hostname: kafka-broker-1
+    depends_on:
+      - zookeeper
+    ports:
+      - "19092:19092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-1:9092,LISTENER_LOCAL://localhost:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,LISTENER_LOCAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_COMPRESSION_TYPE: producer
+    volumes:
+      - "./volumes/kafka/broker-1:/var/lib/kafka/data"
+    networks:
+      - ${GLOBAL_NETWORK:-kafka}
+
+  kafka-broker-2:
+    image: confluentinc/cp-kafka:${KAFKA_VERSION}
+    hostname: kafka-broker-2
+    depends_on:
+      - zookeeper
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 2
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-2:9092,LISTENER_LOCAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,LISTENER_LOCAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_COMPRESSION_TYPE: producer
+    volumes:
+      - "./volumes/kafka/broker-2:/var/lib/kafka/data"
+    networks:
+      - ${GLOBAL_NETWORK:-kafka}
+
+  # Kafka UI - A modern UI for Kafka management
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: PLAINTEXT://kafka-broker-1:9092,PLAINTEXT://kafka-broker-2:9092,PLAINTEXT://kafka-broker-3:9092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: debezium
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-debezium-connector:8083
+    depends_on:
+      - zookeeper
+      - kafka-broker-1
+      - kafka-broker-2
+      - kafka-broker-3
+      - schema-registry
+      - kafka-debezium-connector
+    networks:
+      - ${GLOBAL_NETWORK:-kafka}
+
+  kafka-broker-3:
+    image: confluentinc/cp-kafka:${KAFKA_VERSION}
+    hostname: kafka-broker-3
+    depends_on:
+      - zookeeper
+    ports:
+      - "39092:39092"
+    environment:
+      KAFKA_BROKER_ID: 3
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-3:9092,LISTENER_LOCAL://localhost:39092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,LISTENER_LOCAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_COMPRESSION_TYPE: producer
+    volumes:
+      - "./volumes/kafka/broker-3:/var/lib/kafka/data"
+    networks:
+      - ${GLOBAL_NETWORK:-kafka}
+
+  kafka-debezium-connector:
+    image: my-debezium-connect:latest
+    ports:
+      - 8083:8083
+    environment:
+      CONNECT_GROUP_ID: 1
+      CONNECT_CONFIG_STORAGE_TOPIC: "connect-config"
+      CONNECT_OFFSET_STORAGE_TOPIC: "connect-offsets"
+      CONNECT_STATUS_STORAGE_TOPIC: "connect-status"
+      CONNECT_BOOTSTRAP_SERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
+      CONNECT_KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      CONNECT_INTERNAL_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_INTERNAL_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-debezium-connector
+      CONNECT_PLUGIN_PATH: /usr/share/java,/kafka/connect,/usr/share/confluent-hub-components
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 3
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 3
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 3
+    depends_on:
+      - kafka-broker-1
+      - kafka-broker-2
+      - kafka-broker-3
+      - schema-registry
+    networks:
+      - ${GLOBAL_NETWORK:-kafka}
+
+# Define the network as external (assumes it exists or will be created)
+networks:
+  kafka:
+    external: true
+    name: ${GLOBAL_NETWORK:-kafka}
+
+volumes:
+  debezium-plugins:
+    driver: local
