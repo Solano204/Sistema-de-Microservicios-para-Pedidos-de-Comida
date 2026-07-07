@@ -19,4 +19,4 @@ Thumbs.db
 *.log
 
 # Docker-compose local volumes
-infrastructure/docker-compose/volumes/
+**/docker-compose/volumes/
