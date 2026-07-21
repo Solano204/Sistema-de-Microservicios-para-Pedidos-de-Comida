@@ -34,6 +34,11 @@ public class OrderTestConfiguration {
     }
 
     @Bean
+    public IdempotentOrderRequestRepository idempotentOrderRequestRepository() {
+        return Mockito.mock(IdempotentOrderRequestRepository.class);
+    }
+
+    @Bean
     public OrderDomainService orderDomainService() {
         return new OrderDomainServiceImpl();
     }

@@ -45,9 +45,36 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter</artifactId>
         </dependency>
+        <!-- Was missing entirely - the /actuator/health healthcheck added to
+             docker-compose-food-ordering.yml (Doc 2) had nothing to hit
+             without this. Also required for management.tracing.* below. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-brave</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.zipkin.reporter2</groupId>
+            <artifactId>zipkin-reporter-brave</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>1.19.3</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>1.19.3</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
     <build>
@@ -55,6 +82,15 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <!-- Builder/run image intentionally left at the plugin's default rather
+                     than pinned to an explicit tag here: pinning to a tag I can't verify
+                     currently exists (no network access in this pass) risks breaking the
+                     build outright, which is worse than the reproducibility gap. To pin:
+                     add <builder>paketobuildpacks/builder-jammy-base:<verified-tag></builder>
+                     under <image>, after confirming the tag on hub.docker.com yourself.
+                     Paketo already runs the app as a non-root `cnb` user by default, so
+                     no separate non-root fix is needed here (see Doc 2's compose notes for
+                     JVM memory sizing - the memory calculator reads mem_limit automatically). -->
                 <configuration>
                     <image>
                         <name>${project.groupId}/order.service:${project.version}</name>

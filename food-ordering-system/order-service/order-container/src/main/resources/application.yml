@@ -1,5 +1,18 @@
 server:
   port: 8181
+  shutdown: graceful
+
+management:
+  tracing:
+    sampling:
+      probability: 1.0  # 100% in local dev - drop this before pointing at any shared/persistent environment
+  zipkin:
+    tracing:
+      endpoint: ${ZIPKIN_ENDPOINT:http://localhost:9411/api/v2/spans}
+  endpoints:
+    web:
+      exposure:
+        include: health,info
 
 logging:
   level:
@@ -13,6 +26,8 @@ order-service:
   customer-topic-name: customer
 
 spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
   jpa:
     open-in-view: false
     show-sql: true
@@ -26,6 +41,11 @@ spring:
     password: 1234
     driver-class-name: org.postgresql.Driver
     # platform: postgressql:
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+  sql:
     init:
       mode: ALWAYS
       schema-locations: classpath:init-schema.sql

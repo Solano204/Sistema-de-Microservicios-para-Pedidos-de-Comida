@@ -21,6 +21,12 @@ CREATE TABLE "payment".payments
     CONSTRAINT payments_pkey PRIMARY KEY (id)
 );
 
+-- PaymentJpaRepository.findByOrderId is the lookup used on every payment
+-- request/cancellation - no supporting index existed.
+CREATE INDEX "payments_order_id"
+    ON "payment".payments
+    (order_id);
+
 DROP TABLE IF EXISTS "payment".credit_entry CASCADE;
 
 CREATE TABLE "payment".credit_entry
@@ -31,6 +37,12 @@ CREATE TABLE "payment".credit_entry
     version integer NOT NULL,
     CONSTRAINT credit_entry_pkey PRIMARY KEY (id)
 );
+
+-- One credit_entry row per customer today, but the lookup is always by
+-- customer_id (never by id), so that's the real key.
+CREATE UNIQUE INDEX "credit_entry_customer_id"
+    ON "payment".credit_entry
+    (customer_id);
 
 DROP TYPE IF EXISTS transaction_type;
 
@@ -46,6 +58,14 @@ CREATE TABLE "payment".credit_history
     type transaction_type NOT NULL,
     CONSTRAINT credit_history_pkey PRIMARY KEY (id)
 );
+
+-- credit_history grows one row per transaction (never updated in place,
+-- unlike credit_entry) - findByCustomerId here was an unindexed scan over a
+-- table with no natural upper bound on size. Highest-value index of the 3
+-- added in this pass for exactly that reason.
+CREATE INDEX "credit_history_customer_id"
+    ON "payment".credit_history
+    (customer_id);
 DROP TYPE IF EXISTS outbox_status CASCADE;
 CREATE TYPE outbox_status AS ENUM ('STARTED', 'COMPLETED', 'FAILED');
 

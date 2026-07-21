@@ -65,7 +65,7 @@ class OrderControllerTest {
 
     @Test
     void createOrder_returnsOkWithTrackingId() throws Exception {
-        when(orderApplicationService.createOrder(any())).thenReturn(CreateOrderResponse.builder()
+        when(orderApplicationService.createOrder(any(), any())).thenReturn(CreateOrderResponse.builder()
                 .orderTrackingId(TRACKING_ID)
                 .orderStatus(OrderStatus.PENDING)
                 .message("Order created successfully")
@@ -74,7 +74,7 @@ class OrderControllerTest {
         mockMvc.perform(post("/orders")
                         .contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(createOrderCommand())))
-                .andExpect(status().isOk())
+                .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.orderTrackingId").value(TRACKING_ID.toString()))
                 .andExpect(jsonPath("$.orderStatus").value("PENDING"))
                 .andExpect(jsonPath("$.message").value("Order created successfully"));
@@ -82,14 +82,14 @@ class OrderControllerTest {
 
     @Test
     void createOrder_returnsBadRequest_whenDomainValidationFails() throws Exception {
-        when(orderApplicationService.createOrder(any()))
+        when(orderApplicationService.createOrder(any(), any()))
                 .thenThrow(new OrderDomainException("Total price: 50.00 is not equal to Order items total: 40.00!"));
 
         mockMvc.perform(post("/orders")
                         .contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(createOrderCommand())))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("Total price: 50.00 is not equal to Order items total: 40.00!"));
+                .andExpect(jsonPath("$.detail").value("Total price: 50.00 is not equal to Order items total: 40.00!"));
     }
 
     @Test

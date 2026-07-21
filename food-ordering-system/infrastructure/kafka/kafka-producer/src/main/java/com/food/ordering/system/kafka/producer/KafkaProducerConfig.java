@@ -40,6 +40,10 @@ public class KafkaProducerConfig<K extends Serializable, V extends SpecificRecor
         props.put(ProducerConfig.ACKS_CONFIG, kafkaProducerConfigData.getAcks());
         props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, kafkaProducerConfigData.getRequestTimeoutMs());
         props.put(ProducerConfig.RETRIES_CONFIG, kafkaProducerConfigData.getRetryCount());
+        // acks=all was already set, so idempotence just needed enabling - the
+        // broker now dedupes retried sends via producer id + sequence number,
+        // closing the at-least-once-delivery duplicate window on retry.
+        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
         return props;
     }
 
@@ -50,6 +54,15 @@ public class KafkaProducerConfig<K extends Serializable, V extends SpecificRecor
 
     @Bean
     public KafkaTemplate<K, V> kafkaTemplate() {
-        return new KafkaTemplate<>(producerFactory());
+        // This ProducerFactory/KafkaTemplate pair is hand-built rather than
+        // Spring Boot's own auto-configured one, so Spring Boot's Kafka
+        // tracing auto-instrumentation never sees it - observation has to be
+        // switched on explicitly here. Once enabled, Spring Kafka picks up
+        // the ObservationRegistry bean from the context automatically (no
+        // extra wiring needed) and injects B3 trace headers into every
+        // record this template sends.
+        KafkaTemplate<K, V> template = new KafkaTemplate<>(producerFactory());
+        template.setObservationEnabled(true);
+        return template;
     }
 }

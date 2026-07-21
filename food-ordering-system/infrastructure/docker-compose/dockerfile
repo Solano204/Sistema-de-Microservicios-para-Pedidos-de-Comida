@@ -1,8 +1,7 @@
-# Create a file named Dockerfile in your docker-compose directory
+# Base image is pinned to an exact tag (7.4.0), not `latest` - reproducible
+# builds. Confluent's cp-kafka-connect image already runs as a non-root user
+# by default (has since Confluent Platform 6.x); not adding a redundant USER
+# here without being able to verify the current UID with `docker inspect`.
 FROM confluentinc/cp-kafka-connect:7.4.0
 
-# Install Debezium connector
 RUN confluent-hub install --no-prompt debezium/debezium-connector-postgresql:2.4.2
-
-# Verify installation
-RUN ls -la /usr/share/confluent-hub-components/

@@ -64,6 +64,13 @@ ALTER TABLE restaurant.restaurant_products
     ON DELETE RESTRICT
     NOT VALID;
 
+-- Postgres does NOT auto-index FK columns (unlike some other engines) -
+-- RestaurantRepositoryImpl.findByRestaurantIdAndProductIdIn was relying on
+-- these two FKs alone, with no actual index backing the lookup.
+CREATE INDEX "restaurant_products_restaurant_id_product_id"
+    ON restaurant.restaurant_products
+    (restaurant_id, product_id);
+
 DROP TYPE IF EXISTS outbox_status;
 CREATE TYPE outbox_status AS ENUM ('STARTED', 'COMPLETED', 'FAILED');
 

@@ -1,39 +1,41 @@
 package com.food.ordering.system.order.service.application.exception.handler;
 
-import com.food.ordering.system.application.handler.ErrorDTO;
 import com.food.ordering.system.application.handler.GlobalExceptionHandler;
 import com.food.ordering.system.order.service.domain.exception.OrderDomainException;
 import com.food.ordering.system.order.service.domain.exception.OrderNotFoundException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
-import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.context.request.WebRequest;
+
+import java.net.URI;
 
 @Slf4j
 @ControllerAdvice
 public class OrderGlobalExceptionHandler extends GlobalExceptionHandler {
 
-    @ResponseBody
-    @ExceptionHandler(value = {OrderDomainException.class})
+    @ExceptionHandler(OrderDomainException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public ErrorDTO handleException(OrderDomainException orderDomainException) {
-        log.error(orderDomainException.getMessage(), orderDomainException);
-        return ErrorDTO.builder()
-                .code(HttpStatus.BAD_REQUEST.getReasonPhrase())
-                .message(orderDomainException.getMessage())
-                .build();
+    public ProblemDetail handleException(OrderDomainException exception, WebRequest request) {
+        log.error(exception.getMessage(), exception);
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+        problem.setTitle("Order domain rule violated");
+        problem.setDetail(exception.getMessage());
+        problem.setInstance(URI.create(rawPath(request)));
+        return problem;
     }
 
-    @ResponseBody
-    @ExceptionHandler(value = {OrderNotFoundException.class})
+    @ExceptionHandler(OrderNotFoundException.class)
     @ResponseStatus(HttpStatus.NOT_FOUND)
-    public ErrorDTO handleException(OrderNotFoundException orderNotFoundException) {
-        log.error(orderNotFoundException.getMessage(), orderNotFoundException);
-        return ErrorDTO.builder()
-                .code(HttpStatus.NOT_FOUND.getReasonPhrase())
-                .message(orderNotFoundException.getMessage())
-                .build();
+    public ProblemDetail handleException(OrderNotFoundException exception, WebRequest request) {
+        log.error(exception.getMessage(), exception);
+        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        problem.setTitle("Order not found");
+        problem.setDetail(exception.getMessage());
+        problem.setInstance(URI.create(rawPath(request)));
+        return problem;
     }
 }

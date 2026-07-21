@@ -1,5 +1,67 @@
-
 version: '3.8'
+
+# ── Doc 2 hardening notes ──────────────────────────────────────────────────
+# - Network: single network. Unlike a gateway-fronted system, nothing here
+#   calls out to the internet (no AWS/OpenAI-style dependency) and the
+#   services never call each other over REST - the saga is choreographed
+#   entirely through Kafka/Debezium. An edge/backend/data 3-tier split (as
+#   used in bigger systems) has no real edge component to justify it here.
+#   Marking this network `internal: true` would be the natural next step
+#   since nothing needs outbound internet - deliberately NOT doing that here:
+#   every service in this file also has a host `ports:` mapping, and whether
+#   published ports stay reliably reachable on an `internal: true` bridge
+#   network is inconsistent across Docker Engine/Desktop versions (known
+#   moby/moby reports of DNAT rules not being set up for internal networks).
+#   Getting that wrong would silently make every service unreachable from the
+#   host, and this can't be verified without running `docker compose up`,
+#   which is out of scope for this pass. Flagging as a candidate to test and
+#   flip yourself: try `internal: true`, confirm `localhost:8181` etc. still
+#   respond, keep it if so.
+# - Secrets: Postgres password now comes from a Docker secret file, not a
+#   plaintext env var. The 4 Spring services pick it up via Spring's native
+#   `configtree:` config-data import (Spring Boot 2.4+), not a custom
+#   entrypoint script - see the `SPRING_CONFIG_IMPORT` + `secrets:` block on
+#   each service. Fill in infrastructure/docker-compose/secrets/postgres_password.txt
+#   with your own value; it's gitignored.
+# - Debezium connectors are now registered by a dedicated one-shot service
+#   (debezium-connector-init) instead of a manually-run curl script - the old
+#   start-up.sh script pointed at `host.docker.internal`, which doesn't match
+#   this file's topology (Postgres runs as a container on this network, not
+#   on the Docker host). See register-connectors.sh for the PUT-based
+#   idempotent registration logic (same pattern as debezium/register.sh in
+#   the NEXUS reference project).
+# - Healthchecks + `condition: service_healthy` added throughout so
+#   `depends_on` actually waits for readiness, not just container start.
+# - `security_opt: no-new-privileges` added everywhere (cheap, no downside).
+#   Deferring `read_only`/`cap_drop: ALL` to the Dockerfile-hardening pass
+#   (Doc 3) until each service's actual filesystem/capability needs are
+#   confirmed.
+# - kafka-ui is behind the `observability` profile - it's an optional admin
+#   UI, not required for the saga to function.
+# - Skipped: separate compose.override.yml / prod split (Fase 9.2). This is a
+#   single local-dev environment with no separate deployment target today: a
+#   prod-only file would never actually be used. Revisit if/when this gets a
+#   real deployment target.
+# - Not fixed here: JVM heap sizing. These images are built via Spring Boot
+#   Buildpacks (see order-container/pom.xml's build-image goal), not a
+#   Dockerfile - Paketo's buildpack already runs a memory calculator that
+#   sizes the heap from the container's cgroup memory limit automatically, so
+#   setting `mem_limit` below is sufficient; no manual -XX:MaxRAMPercentage
+#   needed. Covered further in Doc 3.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-security: &default-security
+  security_opt:
+    - no-new-privileges:true
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
 
 services:
   # PostgreSQL Database
@@ -8,11 +70,11 @@ services:
     hostname: postgres
     container_name: postgres
     ports:
-      - "5432:5432"  # Changed from 5433 to standard 5432
+      - "5432:5432"
     environment:
       POSTGRES_DB: postgres
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: admin  # Kept your password
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       POSTGRES_MULTIPLE_DATABASES: order,payment,restaurant,customer
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=trust"
     command:
@@ -25,15 +87,22 @@ services:
       - "wal_level=logical"  # Required for Debezium CDC
     volumes:
       - "./volumes/postgres:/var/lib/postgresql/data"
-      - "./init-scripts:/docker-entrypoint-initdb.d"  # For database initialization scripts
+      - "./init-scripts:/docker-entrypoint-initdb.d"
     networks:
-      - food-ordering-network  # Changed from variable to fixed network name
+      - food-ordering-network
+    secrets:
+      - postgres_password
     restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.0
+    logging: *default-logging
+    <<: *default-security
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 20s
 
   # Zookeeper for Kafka
   zookeeper:
@@ -55,6 +124,20 @@ services:
       - "./volumes/zookeeper/transactions:/var/lib/zookeeper/log"
     networks:
       - food-ordering-network
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    logging: *default-logging
+    <<: *default-security
+    healthcheck:
+      # cub (Confluent Utility Belt) ships in every confluentinc image and is
+      # what Confluent's own tutorials use for readiness checks - more
+      # reliable than assuming `nc` is present in this specific image.
+      test: ["CMD-SHELL", "cub zk-ready localhost:2181 5000 || exit 1"]
+      interval: 10s
+      timeout: 8s
+      retries: 6
+      start_period: 20s
 
   # Kafka Brokers
   kafka-broker-1:
@@ -62,7 +145,8 @@ services:
     hostname: kafka-broker-1
     container_name: kafka-broker-1
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "19092:19092"
     environment:
@@ -81,13 +165,25 @@ services:
       - "./volumes/kafka/broker-1:/var/lib/kafka/data"
     networks:
       - food-ordering-network
+    restart: unless-stopped
+    mem_limit: 1200m
+    cpus: 1.0
+    logging: *default-logging
+    <<: *default-security
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 40s
 
   kafka-broker-2:
     image: confluentinc/cp-kafka:${KAFKA_VERSION:-7.2.5}
     hostname: kafka-broker-2
     container_name: kafka-broker-2
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "29092:29092"
     environment:
@@ -106,13 +202,25 @@ services:
       - "./volumes/kafka/broker-2:/var/lib/kafka/data"
     networks:
       - food-ordering-network
+    restart: unless-stopped
+    mem_limit: 1200m
+    cpus: 1.0
+    logging: *default-logging
+    <<: *default-security
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 40s
 
   kafka-broker-3:
     image: confluentinc/cp-kafka:${KAFKA_VERSION:-7.2.5}
     hostname: kafka-broker-3
     container_name: kafka-broker-3
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "39092:39092"
     environment:
@@ -131,6 +239,17 @@ services:
       - "./volumes/kafka/broker-3:/var/lib/kafka/data"
     networks:
       - food-ordering-network
+    restart: unless-stopped
+    mem_limit: 1200m
+    cpus: 1.0
+    logging: *default-logging
+    <<: *default-security
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 40s
 
   # Schema Registry
   schema-registry:
@@ -138,10 +257,12 @@ services:
     hostname: schema-registry
     container_name: schema-registry
     depends_on:
-      - zookeeper
-      - kafka-broker-1
-      - kafka-broker-2
-      - kafka-broker-3
+      kafka-broker-1:
+        condition: service_healthy
+      kafka-broker-2:
+        condition: service_healthy
+      kafka-broker-3:
+        condition: service_healthy
     ports:
       - "8081:8081"
     environment:
@@ -152,6 +273,17 @@ services:
       SCHEMA_REGISTRY_DEBUG: "true"
     networks:
       - food-ordering-network
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    logging: *default-logging
+    <<: *default-security
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/subjects || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 30s
 
   # Debezium Kafka Connect
   kafka-debezium-connector:
@@ -162,13 +294,13 @@ services:
       postgres:
         condition: service_healthy
       kafka-broker-1:
-        condition: service_started
+        condition: service_healthy
       kafka-broker-2:
-        condition: service_started
+        condition: service_healthy
       kafka-broker-3:
-        condition: service_started
+        condition: service_healthy
       schema-registry:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "8083:8083"
     environment:
@@ -190,6 +322,65 @@ services:
       CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 3
     networks:
       - food-ordering-network
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.0
+    logging: *default-logging
+    <<: *default-security
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+
+  # Zipkin - in-memory storage (default), not Elasticsearch-backed like the
+  # NEXUS reference. NEXUS's ES-backed storage is sized for a much bigger,
+  # longer-lived multi-service platform; this project doesn't need trace data
+  # to survive a restart, and adding Elasticsearch here just to match NEXUS
+  # would be a real new piece of infrastructure to run for no corresponding
+  # benefit at this scale. Same image/port convention as NEXUS otherwise.
+  zipkin:
+    image: openzipkin/zipkin:3.3
+    hostname: zipkin
+    container_name: zipkin
+    ports:
+      - "9411:9411"
+    networks:
+      - food-ordering-network
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    logging: *default-logging
+    <<: *default-security
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:9411/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 30s
+
+  # One-shot: registers the 4 outbox connectors once Connect is healthy.
+  # Replaces the manual curl script in start-up.sh (which targeted a
+  # different, host-network-based topology).
+  debezium-connector-init:
+    image: curlimages/curl:8.10.1
+    container_name: debezium-connector-init
+    depends_on:
+      kafka-debezium-connector:
+        condition: service_healthy
+    volumes:
+      - "./register-connectors.sh:/register-connectors.sh:ro"
+    entrypoint: ["sh", "/register-connectors.sh"]
+    networks:
+      - food-ordering-network
+    secrets:
+      - postgres_password
+    restart: "no"
+    mem_limit: 64m
+    cpus: 0.25
+    logging: *default-logging
+    <<: *default-security
 
   # Order Service
   order-service:
@@ -200,35 +391,48 @@ services:
       postgres:
         condition: service_healthy
       kafka-broker-1:
-        condition: service_started
+        condition: service_healthy
       kafka-broker-2:
-        condition: service_started
+        condition: service_healthy
       kafka-broker-3:
-        condition: service_started
+        condition: service_healthy
       schema-registry:
-        condition: service_started
+        condition: service_healthy
+      zipkin:
+        condition: service_healthy
     ports:
       - "8181:8181"
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      SPRING_CONFIG_IMPORT: "optional:configtree:/run/secrets/"
+      ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/postgres?currentSchema=order&binaryTransfer=true&reWriteBatchedInserts=true
       SPRING_SQL_INIT_MODE: ALWAYS
       SPRING_SQL_INIT_SCHEMA_LOCATIONS: classpath:init-schema.sql
       SPRING_DATASOURCE_USERNAME: postgres
-      SPRING_DATASOURCE_PASSWORD: admin
-      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver 
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQL9Dialect
       SPRING_JPA_PROPERTIES_HIBERNATE_TYPE_PREFERRED_INSTANT_JDBC_TYPE: TIMESTAMP
-      # SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT: 60000
-      # SPRING_DATASOURCE_HIKARI_INITIALIZATION_FAIL_TIMEOUT: 60000
-      # SPRING_DATASOURCE_HIKARI_VALIDATION_TIMEOUT: 3000
       KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
       KAFKA_CONFIG_SCHEMA_REGISTRY_URL: http://schema-registry:8081
       SERVER_PORT: 8181
       LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: DEBUG
     networks:
       - food-ordering-network
+    secrets:
+      - source: postgres_password
+        target: spring.datasource.password
     restart: on-failure
+    mem_limit: 768m
+    cpus: 1.0
+    logging: *default-logging
+    <<: *default-security
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8181/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
 
   # Payment Service
   payment-service:
@@ -239,35 +443,48 @@ services:
       postgres:
         condition: service_healthy
       kafka-broker-1:
-        condition: service_started
+        condition: service_healthy
       kafka-broker-2:
-        condition: service_started
+        condition: service_healthy
       kafka-broker-3:
-        condition: service_started
+        condition: service_healthy
       schema-registry:
-        condition: service_started
+        condition: service_healthy
+      zipkin:
+        condition: service_healthy
     ports:
       - "8182:8182"
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      SPRING_CONFIG_IMPORT: "optional:configtree:/run/secrets/"
+      ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
       SPRING_SQL_INIT_MODE: ALWAYS
       SPRING_SQL_INIT_SCHEMA_LOCATIONS: classpath:init-schema.sql,classpath:init-data.sql
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/postgres?currentSchema=payment&binaryTransfer=true&reWriteBatchedInserts=true&stringtype=unspecified&connectTimeout=60&socketTimeout=60
       SPRING_DATASOURCE_USERNAME: postgres
-      SPRING_DATASOURCE_PASSWORD: admin
-      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver 
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQL9Dialect
       SPRING_JPA_PROPERTIES_HIBERNATE_TYPE_PREFERRED_INSTANT_JDBC_TYPE: TIMESTAMP
-      # SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT: 60000
-      # SPRING_DATASOURCE_HIKARI_INITIALIZATION_FAIL_TIMEOUT: 60000
-      # SPRING_DATASOURCE_HIKARI_VALIDATION_TIMEOUT: 3000
       KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
       KAFKA_CONFIG_SCHEMA_REGISTRY_URL: http://schema-registry:8081
       SERVER_PORT: 8182
       LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: DEBUG
     networks:
       - food-ordering-network
+    secrets:
+      - source: postgres_password
+        target: spring.datasource.password
     restart: on-failure
+    mem_limit: 768m
+    cpus: 1.0
+    logging: *default-logging
+    <<: *default-security
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8182/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
 
   # Restaurant Service
   restaurant-service:
@@ -278,35 +495,48 @@ services:
       postgres:
         condition: service_healthy
       kafka-broker-1:
-        condition: service_started
+        condition: service_healthy
       kafka-broker-2:
-        condition: service_started
+        condition: service_healthy
       kafka-broker-3:
-        condition: service_started
+        condition: service_healthy
       schema-registry:
-        condition: service_started
+        condition: service_healthy
+      zipkin:
+        condition: service_healthy
     ports:
       - "8183:8183"
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      SPRING_CONFIG_IMPORT: "optional:configtree:/run/secrets/"
+      ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/postgres?currentSchema=restaurant&binaryTransfer=true&reWriteBatchedInserts=true&stringtype=unspecified&connectTimeout=60&socketTimeout=60
       SPRING_DATASOURCE_USERNAME: postgres
-      SPRING_DATASOURCE_PASSWORD: admin
       SPRING_SQL_INIT_MODE: ALWAYS
       SPRING_SQL_INIT_SCHEMA_LOCATIONS: classpath:init-schema.sql,classpath:init-data.sql
-      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver 
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQL9Dialect
       SPRING_JPA_PROPERTIES_HIBERNATE_TYPE_PREFERRED_INSTANT_JDBC_TYPE: TIMESTAMP
-      # SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT: 60000
-      # SPRING_DATASOURCE_HIKARI_INITIALIZATION_FAIL_TIMEOUT: 60000
-      # SPRING_DATASOURCE_HIKARI_VALIDATION_TIMEOUT: 3000
       KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
       KAFKA_CONFIG_SCHEMA_REGISTRY_URL: http://schema-registry:8081
       SERVER_PORT: 8183
       LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: DEBUG
     networks:
       - food-ordering-network
+    secrets:
+      - source: postgres_password
+        target: spring.datasource.password
     restart: on-failure
+    mem_limit: 768m
+    cpus: 1.0
+    logging: *default-logging
+    <<: *default-security
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8183/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
 
   # Customer Service
   customer-service:
@@ -317,48 +547,66 @@ services:
       postgres:
         condition: service_healthy
       kafka-broker-1:
-        condition: service_started
+        condition: service_healthy
       kafka-broker-2:
-        condition: service_started
+        condition: service_healthy
       kafka-broker-3:
-        condition: service_started
+        condition: service_healthy
       schema-registry:
-        condition: service_started
+        condition: service_healthy
+      zipkin:
+        condition: service_healthy
     ports:
       - "8184:8184"
     environment:
       SPRING_PROFILES_ACTIVE: docker
+      SPRING_CONFIG_IMPORT: "optional:configtree:/run/secrets/"
+      ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/postgres?currentSchema=customer&binaryTransfer=true&reWriteBatchedInserts=true&connectTimeout=60&socketTimeout=60
-
       SPRING_DATASOURCE_USERNAME: postgres
-      SPRING_DATASOURCE_PASSWORD: admin
       SPRING_SQL_INIT_MODE: ALWAYS
       SPRING_SQL_INIT_SCHEMA_LOCATIONS: classpath:init-schema.sql
-      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver 
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQL9Dialect
       SPRING_JPA_PROPERTIES_HIBERNATE_TYPE_PREFERRED_INSTANT_JDBC_TYPE: TIMESTAMP
-      # SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT: 60000
-      # SPRING_DATASOURCE_HIKARI_INITIALIZATION_FAIL_TIMEOUT: 60000
-      # SPRING_DATASOURCE_HIKARI_VALIDATION_TIMEOUT: 3000
       KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
       KAFKA_CONFIG_SCHEMA_REGISTRY_URL: http://schema-registry:8081
       SERVER_PORT: 8184
       LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: DEBUG
     networks:
       - food-ordering-network
+    secrets:
+      - source: postgres_password
+        target: spring.datasource.password
     restart: on-failure
+    mem_limit: 768m
+    cpus: 1.0
+    logging: *default-logging
+    <<: *default-security
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8184/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 60s
 
-  # Kafka UI for monitoring
+  # Kafka UI for monitoring - optional, not required for the saga to run
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     hostname: kafka-ui
     container_name: kafka-ui
+    profiles: ["observability"]
     depends_on:
-      - kafka-broker-1
-      - kafka-broker-2
-      - kafka-broker-3
-      - schema-registry
-      - kafka-debezium-connector
+      kafka-broker-1:
+        condition: service_healthy
+      kafka-broker-2:
+        condition: service_healthy
+      kafka-broker-3:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+      kafka-debezium-connector:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
@@ -370,6 +618,11 @@ services:
       KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-debezium-connector:8083
     networks:
       - food-ordering-network
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    logging: *default-logging
+    <<: *default-security
 
 networks:
   food-ordering-network:

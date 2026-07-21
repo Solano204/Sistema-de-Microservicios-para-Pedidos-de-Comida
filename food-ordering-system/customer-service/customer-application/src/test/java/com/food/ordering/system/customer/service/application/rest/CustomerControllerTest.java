@@ -59,7 +59,7 @@ class CustomerControllerTest {
         mockMvc.perform(post("/customers")
                         .contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(command())))
-                .andExpect(status().isOk())
+                .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.customerId").value(CUSTOMER_ID.toString()))
                 .andExpect(jsonPath("$.message").value("Customer saved successfully!"));
     }
@@ -73,6 +73,6 @@ class CustomerControllerTest {
                         .contentType(APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(command())))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value("Could not save customer with id " + CUSTOMER_ID));
+                .andExpect(jsonPath("$.detail").value("Could not save customer with id " + CUSTOMER_ID));
     }
 }

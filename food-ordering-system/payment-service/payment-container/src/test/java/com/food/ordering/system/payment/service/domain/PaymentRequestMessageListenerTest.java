@@ -26,7 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Slf4j
 @SpringBootTest(classes = PaymentServiceApplication.class)
-public class PaymentRequestMessageListenerTest {
+public class PaymentRequestMessageListenerTest extends AbstractIntegrationTest {
 
     @Autowired
     private PaymentRequestMessageListener paymentRequestMessageListener;

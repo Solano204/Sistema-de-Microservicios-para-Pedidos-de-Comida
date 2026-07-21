@@ -21,6 +21,14 @@ CREATE TABLE "order".orders
     CONSTRAINT orders_pkey PRIMARY KEY (id)
 );
 
+-- GET /orders/{trackingId} (OrderJpaRepository.findByTrackingId) was doing a
+-- full table scan - this is the hottest read path in the service and had no
+-- supporting index. Unique because tracking_id is meant to identify exactly
+-- one order.
+CREATE UNIQUE INDEX "orders_tracking_id"
+    ON "order".orders
+    (tracking_id);
+
 DROP TABLE IF EXISTS "order".order_items CASCADE;
 
 CREATE TABLE "order".order_items
@@ -125,4 +133,16 @@ CREATE TABLE "order".customers
     first_name character varying COLLATE pg_catalog."default" NOT NULL,
     last_name character varying COLLATE pg_catalog."default" NOT NULL,
     CONSTRAINT customers_pkey PRIMARY KEY (id)
+);
+
+DROP TABLE IF EXISTS "order".idempotency_key CASCADE;
+
+CREATE TABLE "order".idempotency_key
+(
+    idempotency_key uuid NOT NULL,
+    order_tracking_id uuid NOT NULL,
+    order_status order_status NOT NULL,
+    message character varying COLLATE pg_catalog."default" NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT idempotency_key_pkey PRIMARY KEY (idempotency_key)
 );
