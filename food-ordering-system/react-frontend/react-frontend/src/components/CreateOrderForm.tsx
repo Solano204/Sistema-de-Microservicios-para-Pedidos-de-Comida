@@ -1,7 +1,12 @@
-import { useState, type FormEvent } from "react";
+import { useState, type ChangeEvent, type FormEvent } from "react";
 import { createOrder } from "../api";
 import ResultBox, { type ResultState } from "./ResultBox";
 import type { OrderItem } from "../types";
+import { SEED_RESTAURANTS, findSeedProduct } from "../seedData";
+
+const ALL_SEED_PRODUCTS = SEED_RESTAURANTS.flatMap((restaurant) =>
+  restaurant.products.map((product) => ({ ...product, restaurantName: restaurant.name }))
+);
 
 interface Row {
   rowId: string;
@@ -55,6 +60,22 @@ export default function CreateOrderForm({ customerId, onCustomerIdChange, onOrde
     setItems((prev) => [...prev, newRow()]);
   }
 
+  function handlePickProduct(rowId: string, productId: string) {
+    if (!productId) return;
+    const product = findSeedProduct(productId);
+    setItems((prev) =>
+      prev.map((row) =>
+        row.rowId === rowId
+          ? { ...row, productId, price: product ? String(product.price) : row.price }
+          : row
+      )
+    );
+  }
+
+  function handlePickRestaurant(event: ChangeEvent<HTMLSelectElement>) {
+    if (event.target.value) setRestaurantId(event.target.value);
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const orderItems: OrderItem[] = items.map((row) => {
@@ -94,6 +115,17 @@ export default function CreateOrderForm({ customerId, onCustomerIdChange, onOrde
           restaurantId
           <input name="restaurantId" value={restaurantId} onChange={(e) => setRestaurantId(e.target.value)} required />
         </label>
+        <label>
+          Usar restaurante de prueba (init-data.sql)
+          <select value="" onChange={handlePickRestaurant}>
+            <option value="">— elegir —</option>
+            {SEED_RESTAURANTS.map((restaurant) => (
+              <option key={restaurant.restaurantId} value={restaurant.restaurantId}>
+                {restaurant.name}
+              </option>
+            ))}
+          </select>
+        </label>
         <fieldset>
           <legend>Dirección de entrega</legend>
           <label>
@@ -120,6 +152,20 @@ export default function CreateOrderForm({ customerId, onCustomerIdChange, onOrde
           <div id="orderItemsList">
             {items.map((row) => (
               <div className="order-item-row" key={row.rowId}>
+                <select
+                  className="product-seed-picker"
+                  aria-label="Producto de prueba"
+                  value=""
+                  onChange={(e) => handlePickProduct(row.rowId, e.target.value)}
+                >
+                  <option value="">— producto de prueba —</option>
+                  {ALL_SEED_PRODUCTS.map((product) => (
+                    <option key={product.productId} value={product.productId}>
+                      {product.restaurantName} · {product.name} · ${product.price.toFixed(2)}
+                      {product.available ? "" : " (no disponible)"}
+                    </option>
+                  ))}
+                </select>
                 <input
                   data-field="productId"
                   placeholder="productId (UUID)"

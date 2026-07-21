@@ -84,6 +84,32 @@ describe("CreateOrderForm", () => {
     expect(onOrderCreated).toHaveBeenCalledWith("t1");
   });
 
+  it("picking a seed restaurant from the dropdown fills in its restaurantId", async () => {
+    const user = userEvent.setup();
+    render(<CreateOrderForm customerId="c1" onCustomerIdChange={() => {}} onOrderCreated={() => {}} />);
+
+    await user.selectOptions(
+      screen.getByLabelText("Usar restaurante de prueba (init-data.sql)"),
+      "d215b5f8-0249-4dc5-89a3-51fd148cfb46",
+    );
+
+    expect(screen.getByLabelText("restaurantId")).toHaveValue("d215b5f8-0249-4dc5-89a3-51fd148cfb46");
+  });
+
+  it("picking a seed product for a row fills in its productId and auto-fills its price", async () => {
+    const user = userEvent.setup();
+    render(<CreateOrderForm customerId="c1" onCustomerIdChange={() => {}} onOrderCreated={() => {}} />);
+
+    await user.selectOptions(
+      screen.getByLabelText("Producto de prueba"),
+      "d215b5f8-0249-4dc5-89a3-51fd148cfb50",
+    );
+
+    expect(screen.getByPlaceholderText("productId (UUID)")).toHaveValue("d215b5f8-0249-4dc5-89a3-51fd148cfb50");
+    expect(screen.getByPlaceholderText("precio unitario")).toHaveValue(40);
+    expect(screen.getByText("40.00", { selector: "[data-field=subTotal]" })).toBeInTheDocument();
+  });
+
   it("editing customerId calls onCustomerIdChange (the field is controlled by the parent)", async () => {
     const onCustomerIdChange = vi.fn();
     const user = userEvent.setup();

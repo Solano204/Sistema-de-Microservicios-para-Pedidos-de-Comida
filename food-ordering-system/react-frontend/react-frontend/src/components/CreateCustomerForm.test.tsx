@@ -20,6 +20,18 @@ describe("CreateCustomerForm", () => {
     expect(screen.getByLabelText(/customerId/)).toHaveValue("d215b5f8-0249-4dc5-89a3-51fd148cfb41");
   });
 
+  it("picking a seed customer from the dropdown fills in its customerId", async () => {
+    const user = userEvent.setup();
+    render(<CreateCustomerForm onCustomerCreated={() => {}} />);
+
+    await user.selectOptions(
+      screen.getByLabelText("Usar cliente de prueba (init-data.sql)"),
+      "d215b5f8-0249-4dc5-89a3-51fd148cfb43",
+    );
+
+    expect(screen.getByLabelText(/^customerId/)).toHaveValue("d215b5f8-0249-4dc5-89a3-51fd148cfb43");
+  });
+
   it("the Generar button replaces customerId with a freshly generated UUID", async () => {
     const user = userEvent.setup();
     render(<CreateCustomerForm onCustomerCreated={() => {}} />);

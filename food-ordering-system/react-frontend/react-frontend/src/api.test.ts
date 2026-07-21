@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createCustomer, createOrder, trackOrder } from "./api";
+import { createCustomer, createOrder, trackOrder, listCustomers, listOrders, listRestaurants } from "./api";
 import { saveConfig } from "./config";
 
 /**
@@ -21,7 +21,11 @@ function mockFetchOnce(status: number, body: unknown) {
 }
 
 beforeEach(() => {
-  saveConfig({ customerServiceUrl: "http://localhost:8184", orderServiceUrl: "http://localhost:8181" });
+  saveConfig({
+    customerServiceUrl: "http://localhost:8184",
+    orderServiceUrl: "http://localhost:8181",
+    restaurantServiceUrl: "http://localhost:8183",
+  });
 });
 
 afterEach(() => {
@@ -81,5 +85,48 @@ describe("trackOrder", () => {
       instance: "/orders/missing",
     });
     await expect(trackOrder("missing")).rejects.toThrow("Order not found");
+  });
+});
+
+describe("listCustomers", () => {
+  it("GETs /customers on customerServiceUrl", async () => {
+    const fetchMock = mockFetchOnce(200, [{ customerId: "c1", username: "u1", firstName: "A", lastName: "B" }]);
+
+    const result = await listCustomers();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://localhost:8184/customers");
+    expect(init.method).toBe("GET");
+    expect(result).toEqual([{ customerId: "c1", username: "u1", firstName: "A", lastName: "B" }]);
+  });
+});
+
+describe("listOrders", () => {
+  it("GETs /orders on orderServiceUrl", async () => {
+    const fetchMock = mockFetchOnce(200, [
+      { orderTrackingId: "t1", customerId: "c1", restaurantId: "r1", price: 10, orderStatus: "PENDING" },
+    ]);
+
+    const result = await listOrders();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://localhost:8181/orders");
+    expect(init.method).toBe("GET");
+    expect(result[0].orderStatus).toBe("PENDING");
+  });
+});
+
+describe("listRestaurants", () => {
+  it("GETs /restaurants on restaurantServiceUrl", async () => {
+    const fetchMock = mockFetchOnce(200, [
+      { restaurantId: "r1", name: "restaurant_1", active: true, products: [] },
+    ]);
+
+    const result = await listRestaurants();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://localhost:8183/restaurants");
+    expect(init.method).toBe("GET");
+    expect(result[0].name).toBe("restaurant_1");
   });
 });

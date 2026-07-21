@@ -8,13 +8,22 @@ describe("config", () => {
     expect(loadConfig()).toEqual({
       customerServiceUrl: "http://localhost:8184",
       orderServiceUrl: "http://localhost:8181",
+      restaurantServiceUrl: "http://localhost:8183",
     });
   });
 
   it("saveConfig persists a value that loadConfig then returns", () => {
-    saveConfig({ customerServiceUrl: "http://example.test:1", orderServiceUrl: "http://example.test:2" });
+    saveConfig({
+      customerServiceUrl: "http://example.test:1",
+      orderServiceUrl: "http://example.test:2",
+      restaurantServiceUrl: "http://example.test:3",
+    });
 
-    expect(loadConfig()).toEqual({ customerServiceUrl: "http://example.test:1", orderServiceUrl: "http://example.test:2" });
+    expect(loadConfig()).toEqual({
+      customerServiceUrl: "http://example.test:1",
+      orderServiceUrl: "http://example.test:2",
+      restaurantServiceUrl: "http://example.test:3",
+    });
   });
 
   it("loadConfig falls back to the default for a field missing from the stored JSON", () => {
@@ -23,6 +32,7 @@ describe("config", () => {
     expect(loadConfig()).toEqual({
       customerServiceUrl: "http://only-this.test",
       orderServiceUrl: "http://localhost:8181",
+      restaurantServiceUrl: "http://localhost:8183",
     });
   });
 
@@ -32,6 +42,7 @@ describe("config", () => {
     expect(loadConfig()).toEqual({
       customerServiceUrl: "http://localhost:8184",
       orderServiceUrl: "http://localhost:8181",
+      restaurantServiceUrl: "http://localhost:8183",
     });
   });
 });

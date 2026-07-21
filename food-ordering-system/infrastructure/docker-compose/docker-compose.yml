@@ -1,31 +1,29 @@
-version: '3.8'
-
-# ── food-ordering-system: PRODUCTION compose ────────────────────────────────
-# Sibling to docker-compose-food-ordering.yml (the local-dev file), not a
-# replacement for it. Same Kafka/Zipkin/Debezium/monitoring topology — this
-# file only changes what's appropriate for a real deployment target vs a
-# laptop:
+# ── food-ordering-system: single production-style compose file ─────────────
+# This is the ONLY docker-compose file for this project (the old separate
+# local-dev file and the legacy per-component fragment files it superseded
+# have been removed - see git history). Same Kafka/Zipkin/Debezium/
+# monitoring topology throughout:
 #
 #   - App service images come from ${ORDER_SERVICE_IMAGE}/etc. env vars,
-#     defaulting to the same local Buildpack image names the dev file uses
-#     (`mvn -pl <module> -am install` from food-ordering-system/, per each
-#     *-container/pom.xml's spring-boot-maven-plugin build-image goal).
+#     defaulting to the local Buildpack image names produced by
+#     `mvn -pl <module> -am install` from food-ordering-system/, per each
+#     *-container/pom.xml's spring-boot-maven-plugin build-image goal.
 #     Point these at a registry instead (e.g. ghcr.io/<owner>/order-service:<tag>)
 #     by setting the corresponding env var in .env — nothing else in this
 #     file needs to change.
-#   - Zookeeper/Kafka brokers/Schema Registry/Postgres/Kafka Connect no
-#     longer publish host ports. Every container still reaches them over
-#     food-ordering-network by service name; the dev file publishes these
-#     for local tooling (psql, kafka console tools, curl-ing Schema
-#     Registry) that a real deployment target doesn't need exposed.
-#   - Trace sampling drops from 100% (dev) to 10% via
-#     MANAGEMENT_TRACING_SAMPLING_PROBABILITY, and app log level drops from
-#     DEBUG to INFO — both are exactly what TRACING_NOTES.md already flags
-#     ("100% in local dev - drop this before pointing at any shared/
-#     persistent environment").
-#   - Everything else (healthchecks, secrets, mem_limit/cpus, log rotation,
-#     no-new-privileges, the observability profile) is unchanged from the
-#     dev file — that file was already written prod-style.
+#   - Kafka/Schema Registry/Postgres/Kafka Connect don't publish host
+#     ports - every container reaches them over
+#     food-ordering-network by service name, and a real deployment target
+#     doesn't need them exposed on the host. To poke at them directly for
+#     debugging, `docker compose exec <service> ...` instead of relying on
+#     a host port.
+#   - Trace sampling is 10% (MANAGEMENT_TRACING_SAMPLING_PROBABILITY) and
+#     app log level is INFO - see TRACING_NOTES.md for why 100%/DEBUG is a
+#     local-dev-only setting.
+#
+#   - No profiles: everything (app services, Kafka/CDC, the React panel,
+#     kafka-ui/prometheus/grafana/cadvisor) starts with a single
+#     `docker compose up -d` - nothing is left to run locally.
 #
 # ONE-TIME SETUP:
 #   - Populate infrastructure/docker-compose/secrets/postgres_password.txt
@@ -33,7 +31,7 @@ version: '3.8'
 #   - If pointing *_IMAGE vars at a private registry: `docker login` first.
 #
 # USAGE:
-#   docker compose -f docker-compose-prod.yml --profile observability up -d
+#   docker compose up -d
 # ═════════════════════════════════════════════════════════════════════════
 
 x-logging: &default-logging
@@ -58,11 +56,12 @@ services:
     image: postgres:17.2-alpine
     hostname: postgres
     container_name: postgres
+    ports:
+      - "5442:5432"
     environment:
       POSTGRES_DB: postgres
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-      POSTGRES_MULTIPLE_DATABASES: order,payment,restaurant,customer
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=trust"
     command:
       - "postgres"
@@ -91,58 +90,40 @@ services:
       retries: 5
       start_period: 20s
 
-  # Zookeeper for Kafka
-  zookeeper:
-    image: confluentinc/cp-zookeeper:${KAFKA_VERSION:-7.2.5}
-    hostname: zookeeper
-    container_name: zookeeper
+  # Kafka (KRaft mode - no Zookeeper), same pattern as NEXUS
+  # (../../../../../../Music/PROJECT IA STARTUP/NEXUS/kafka/docker-compose.yml):
+  # a single node acting as both broker and controller. Collapsed from the
+  # old 3-broker Zookeeper-based cluster - on a single Docker host, 3
+  # brokers bought no real fault tolerance, just controller-quorum
+  # complexity that isn't worth it here. Replication-factor-3 settings
+  # dropped to 1 to match (a single broker can't satisfy RF=3 - topic
+  # creation would fail).
+  kafka:
+    image: apache/kafka:4.2.0
+    hostname: kafka
+    container_name: kafka
     environment:
-      ZOOKEEPER_SERVER_ID: 1
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-      ZOOKEEPER_INIT_LIMIT: 5
-      ZOOKEEPER_SYNC_LIMIT: 2
-      ZOOKEEPER_SERVERS: zookeeper:2888:3888
-      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok"
-    volumes:
-      - "./volumes/zookeeper/data:/var/lib/zookeeper/data"
-      - "./volumes/zookeeper/transactions:/var/lib/zookeeper/log"
-    networks:
-      - food-ordering-network
-    restart: unless-stopped
-    mem_limit: 512m
-    cpus: 0.5
-    logging: *default-logging
-    <<: *default-security
-    healthcheck:
-      test: ["CMD-SHELL", "cub zk-ready localhost:2181 5000 || exit 1"]
-      interval: 10s
-      timeout: 8s
-      retries: 6
-      start_period: 20s
-
-  # Kafka Brokers
-  kafka-broker-1:
-    image: confluentinc/cp-kafka:${KAFKA_VERSION:-7.2.5}
-    hostname: kafka-broker-1
-    container_name: kafka-broker-1
-    depends_on:
-      zookeeper:
-        condition: service_healthy
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-1:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://kafka:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 3000
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
       KAFKA_COMPRESSION_TYPE: producer
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # Same fixed cluster ID NEXUS uses (a well-known example ID from
+      # Kafka's own KRaft quickstart, not a secret) - any 22-char base64
+      # UUID works, this one just keeps both projects consistent.
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qg"
     volumes:
-      - "./volumes/kafka/broker-1:/var/lib/kafka/data"
+      - "./volumes/kafka/node:/var/lib/kafka/data"
     networks:
       - food-ordering-network
     restart: unless-stopped
@@ -151,77 +132,7 @@ services:
     logging: *default-logging
     <<: *default-security
     healthcheck:
-      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 8
-      start_period: 40s
-
-  kafka-broker-2:
-    image: confluentinc/cp-kafka:${KAFKA_VERSION:-7.2.5}
-    hostname: kafka-broker-2
-    container_name: kafka-broker-2
-    depends_on:
-      zookeeper:
-        condition: service_healthy
-    environment:
-      KAFKA_BROKER_ID: 2
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-2:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 3000
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
-      KAFKA_COMPRESSION_TYPE: producer
-    volumes:
-      - "./volumes/kafka/broker-2:/var/lib/kafka/data"
-    networks:
-      - food-ordering-network
-    restart: unless-stopped
-    mem_limit: 1200m
-    cpus: 1.0
-    logging: *default-logging
-    <<: *default-security
-    healthcheck:
-      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 8
-      start_period: 40s
-
-  kafka-broker-3:
-    image: confluentinc/cp-kafka:${KAFKA_VERSION:-7.2.5}
-    hostname: kafka-broker-3
-    container_name: kafka-broker-3
-    depends_on:
-      zookeeper:
-        condition: service_healthy
-    environment:
-      KAFKA_BROKER_ID: 3
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-3:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 3000
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
-      KAFKA_COMPRESSION_TYPE: producer
-    volumes:
-      - "./volumes/kafka/broker-3:/var/lib/kafka/data"
-    networks:
-      - food-ordering-network
-    restart: unless-stopped
-    mem_limit: 1200m
-    cpus: 1.0
-    logging: *default-logging
-    <<: *default-security
-    healthcheck:
-      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 8
@@ -233,17 +144,16 @@ services:
     hostname: schema-registry
     container_name: schema-registry
     depends_on:
-      kafka-broker-1:
-        condition: service_healthy
-      kafka-broker-2:
-        condition: service_healthy
-      kafka-broker-3:
+      kafka:
         condition: service_healthy
     environment:
       SCHEMA_REGISTRY_HOST_NAME: schema-registry
-      SCHEMA_REGISTRY_KAFKASTORE_CONNECTION_URL: "zookeeper:2181"
-      SCHEMA_REGISTRY_LISTENERS: http://schema-registry:8081
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka-broker-1:9092,PLAINTEXT://kafka-broker-2:9092,PLAINTEXT://kafka-broker-3:9092
+      # Bind all interfaces, not just the schema-registry hostname's address -
+      # otherwise the container's own loopback isn't bound and the healthcheck
+      # (which curls localhost from inside this same container) always fails
+      # with connection-refused even though the service is genuinely up.
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:9092
     networks:
       - food-ordering-network
     restart: unless-stopped
@@ -269,11 +179,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      kafka-broker-1:
-        condition: service_healthy
-      kafka-broker-2:
-        condition: service_healthy
-      kafka-broker-3:
+      kafka:
         condition: service_healthy
       schema-registry:
         condition: service_healthy
@@ -282,7 +188,7 @@ services:
       CONNECT_CONFIG_STORAGE_TOPIC: "food-ordering-connect-configs"
       CONNECT_OFFSET_STORAGE_TOPIC: "food-ordering-connect-offsets"
       CONNECT_STATUS_STORAGE_TOPIC: "food-ordering-connect-status"
-      CONNECT_BOOTSTRAP_SERVERS: "kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092"
+      CONNECT_BOOTSTRAP_SERVERS: "kafka:9092"
       CONNECT_KEY_CONVERTER: "io.confluent.connect.avro.AvroConverter"
       CONNECT_VALUE_CONVERTER: "io.confluent.connect.avro.AvroConverter"
       CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: "http://schema-registry:8081"
@@ -291,9 +197,9 @@ services:
       CONNECT_INTERNAL_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
       CONNECT_REST_ADVERTISED_HOST_NAME: kafka-debezium-connector
       CONNECT_PLUGIN_PATH: "/usr/share/java,/kafka/connect,/usr/share/confluent-hub-components"
-      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 3
-      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 3
-      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 3
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
     networks:
       - food-ordering-network
     restart: unless-stopped
@@ -358,11 +264,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      kafka-broker-1:
-        condition: service_healthy
-      kafka-broker-2:
-        condition: service_healthy
-      kafka-broker-3:
+      kafka:
         condition: service_healthy
       schema-registry:
         condition: service_healthy
@@ -382,7 +284,7 @@ services:
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQL9Dialect
       SPRING_JPA_PROPERTIES_HIBERNATE_TYPE_PREFERRED_INSTANT_JDBC_TYPE: TIMESTAMP
-      KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
+      KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_CONFIG_SCHEMA_REGISTRY_URL: http://schema-registry:8081
       SERVER_PORT: 8181
       LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: INFO
@@ -397,7 +299,13 @@ services:
     logging: *default-logging
     <<: *default-security
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8181/actuator/health || exit 1"]
+      # Paketo Buildpack runtime images have no wget/curl - bash's own
+      # /dev/tcp is used instead (bash is present, wget/curl aren't).
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/localhost/8181 && printf ''GET /actuator/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'' >&3 && timeout 3 head -c12 <&3 | grep -q 200'
       interval: 15s
       timeout: 10s
       retries: 8
@@ -411,18 +319,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      kafka-broker-1:
-        condition: service_healthy
-      kafka-broker-2:
-        condition: service_healthy
-      kafka-broker-3:
+      kafka:
         condition: service_healthy
       schema-registry:
         condition: service_healthy
       zipkin:
         condition: service_healthy
-    ports:
-      - "8182:8182"
     environment:
       SPRING_PROFILES_ACTIVE: docker
       SPRING_CONFIG_IMPORT: "optional:configtree:/run/secrets/"
@@ -435,9 +337,8 @@ services:
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQL9Dialect
       SPRING_JPA_PROPERTIES_HIBERNATE_TYPE_PREFERRED_INSTANT_JDBC_TYPE: TIMESTAMP
-      KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
+      KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_CONFIG_SCHEMA_REGISTRY_URL: http://schema-registry:8081
-      SERVER_PORT: 8182
       LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: INFO
     networks:
       - food-ordering-network
@@ -449,12 +350,11 @@ services:
     cpus: 1.0
     logging: *default-logging
     <<: *default-security
-    healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8182/actuator/health || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 8
-      start_period: 60s
+    # No healthcheck: payment-service is a Kafka-consumer-only saga
+    # participant (only spring-boot-starter-actuator, no
+    # spring-boot-starter-web) - there's no HTTP server to check, and
+    # nothing else in this file depends on its health. `restart:
+    # on-failure` covers the failure case (JVM crash/exit).
 
   # Restaurant Service
   restaurant-service:
@@ -464,11 +364,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      kafka-broker-1:
-        condition: service_healthy
-      kafka-broker-2:
-        condition: service_healthy
-      kafka-broker-3:
+      kafka:
         condition: service_healthy
       schema-registry:
         condition: service_healthy
@@ -488,9 +384,8 @@ services:
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQL9Dialect
       SPRING_JPA_PROPERTIES_HIBERNATE_TYPE_PREFERRED_INSTANT_JDBC_TYPE: TIMESTAMP
-      KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
+      KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_CONFIG_SCHEMA_REGISTRY_URL: http://schema-registry:8081
-      SERVER_PORT: 8183
       LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: INFO
     networks:
       - food-ordering-network
@@ -502,8 +397,14 @@ services:
     cpus: 1.0
     logging: *default-logging
     <<: *default-security
+    # Now has a real HTTP server (GET /restaurants, admin browse UI) - same
+    # wget-free bash /dev/tcp healthcheck as order/payment/customer-service.
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8183/actuator/health || exit 1"]
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/localhost/8183 && printf ''GET /restaurants HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'' >&3 && timeout 3 head -c12 <&3 | grep -q 200'
       interval: 15s
       timeout: 10s
       retries: 8
@@ -517,11 +418,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      kafka-broker-1:
-        condition: service_healthy
-      kafka-broker-2:
-        condition: service_healthy
-      kafka-broker-3:
+      kafka:
         condition: service_healthy
       schema-registry:
         condition: service_healthy
@@ -541,7 +438,7 @@ services:
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQL9Dialect
       SPRING_JPA_PROPERTIES_HIBERNATE_TYPE_PREFERRED_INSTANT_JDBC_TYPE: TIMESTAMP
-      KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
+      KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_CONFIG_SCHEMA_REGISTRY_URL: http://schema-registry:8081
       SERVER_PORT: 8184
       LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: INFO
@@ -556,24 +453,58 @@ services:
     logging: *default-logging
     <<: *default-security
     healthcheck:
-      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:8184/actuator/health || exit 1"]
+      # Paketo Buildpack runtime images have no wget/curl - bash's own
+      # /dev/tcp is used instead (bash is present, wget/curl aren't).
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/localhost/8184 && printf ''GET /actuator/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n'' >&3 && timeout 3 head -c12 <&3 | grep -q 200'
       interval: 15s
       timeout: 10s
       retries: 8
       start_period: 60s
+
+  # React panel (order-service + customer-service integration UI). Built
+  # and served as a static site via nginx - no dev server, nothing local.
+  frontend:
+    build:
+      context: ../../react-frontend/react-frontend
+      dockerfile: Dockerfile
+    image: com.food.ordering.system/frontend:1.0-SNAPSHOT
+    hostname: frontend
+    container_name: frontend
+    depends_on:
+      order-service:
+        condition: service_healthy
+      customer-service:
+        condition: service_healthy
+    ports:
+      - "5173:8080"
+    networks:
+      - food-ordering-network
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+    logging: *default-logging
+    <<: *default-security
+    healthcheck:
+      # 127.0.0.1, not localhost: nginx here only binds 0.0.0.0:8080 (IPv4),
+      # but "localhost" resolves to ::1 first - wget tried IPv6, got
+      # connection-refused, even though the IPv4 listener was fine.
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://127.0.0.1:8080/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   # Kafka UI for monitoring - optional, not required for the saga to run
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     hostname: kafka-ui
     container_name: kafka-ui
-    profiles: ["observability"]
     depends_on:
-      kafka-broker-1:
-        condition: service_healthy
-      kafka-broker-2:
-        condition: service_healthy
-      kafka-broker-3:
+      kafka:
         condition: service_healthy
       schema-registry:
         condition: service_healthy
@@ -583,9 +514,8 @@ services:
       - "8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: food-ordering-cluster
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
       KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
-      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
       KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: debezium
       KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-debezium-connector:8083
     networks:
@@ -598,10 +528,12 @@ services:
 
   # ── Monitoring (right-sized subset of NEXUS's stack — see MONITORING_NOTES.md) ──
   postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:v0.15.0
+    # v0.15.0 predates Postgres 17's pg_stat_bgwriter split (checkpoint
+    # columns moved to pg_stat_checkpointer) - its stat_bgwriter collector
+    # errored every scrape ("column checkpoints_timed does not exist").
+    image: prometheuscommunity/postgres-exporter:v0.17.1
     hostname: postgres-exporter
     container_name: postgres-exporter
-    profiles: ["observability"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -624,7 +556,6 @@ services:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     hostname: cadvisor
     container_name: cadvisor
-    profiles: ["observability"]
     privileged: true
     devices:
       - /dev/kmsg
@@ -653,7 +584,6 @@ services:
     image: prom/prometheus:v2.51.0
     hostname: prometheus
     container_name: prometheus
-    profiles: ["observability"]
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -681,7 +611,6 @@ services:
     image: grafana/grafana:10.4.0
     hostname: grafana
     container_name: grafana
-    profiles: ["observability"]
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_password
@@ -690,7 +619,7 @@ services:
       - "./volumes/grafana:/var/lib/grafana"
       - "./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro"
     ports:
-      - "3000:3000"
+      - "3010:3000"
     networks:
       - food-ordering-network
     secrets:

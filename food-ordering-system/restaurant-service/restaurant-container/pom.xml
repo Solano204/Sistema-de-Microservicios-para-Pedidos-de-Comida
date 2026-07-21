@@ -28,6 +28,12 @@
             <groupId>com.food.ordering.system</groupId>
             <artifactId>restaurant-messaging</artifactId>
         </dependency>
+        <!-- Read-only /restaurants catalog endpoint (admin browse UI) - restaurant-service
+             is otherwise Kafka-only, this is the only reason it needs a web layer. -->
+        <dependency>
+            <groupId>com.food.ordering.system</groupId>
+            <artifactId>common-application</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter</artifactId>
@@ -50,6 +56,11 @@
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
     <build>

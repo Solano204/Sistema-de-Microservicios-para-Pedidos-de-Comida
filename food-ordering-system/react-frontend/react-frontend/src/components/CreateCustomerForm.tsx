@@ -1,6 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { useState, type ChangeEvent, type FormEvent } from "react";
 import { createCustomer } from "../api";
 import ResultBox, { type ResultState } from "./ResultBox";
+import { SEED_CUSTOMERS } from "../seedData";
 
 interface Props {
   onCustomerCreated: (customerId: string) => void;
@@ -15,6 +16,10 @@ export default function CreateCustomerForm({ onCustomerCreated }: Props) {
 
   function handleGenerateUuid() {
     setCustomerId(crypto.randomUUID());
+  }
+
+  function handlePickSeed(event: ChangeEvent<HTMLSelectElement>) {
+    if (event.target.value) setCustomerId(event.target.value);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -48,6 +53,17 @@ export default function CreateCustomerForm({ onCustomerCreated }: Props) {
               Generar
             </button>
           </div>
+        </label>
+        <label>
+          Usar cliente de prueba (init-data.sql)
+          <select value="" onChange={handlePickSeed}>
+            <option value="">— elegir —</option>
+            {SEED_CUSTOMERS.map((customer) => (
+              <option key={customer.customerId} value={customer.customerId}>
+                {customer.label}
+              </option>
+            ))}
+          </select>
         </label>
         <label>
           Usuario

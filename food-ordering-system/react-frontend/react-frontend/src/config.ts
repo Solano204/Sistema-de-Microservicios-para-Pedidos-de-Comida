@@ -4,6 +4,7 @@
 export interface PanelConfig {
   customerServiceUrl: string;
   orderServiceUrl: string;
+  restaurantServiceUrl: string;
 }
 
 const STORAGE_KEY = "food-ordering-panel:config";
@@ -11,6 +12,7 @@ const STORAGE_KEY = "food-ordering-panel:config";
 const DEFAULT_CONFIG: PanelConfig = {
   customerServiceUrl: "http://localhost:8184",
   orderServiceUrl: "http://localhost:8181",
+  restaurantServiceUrl: "http://localhost:8183",
 };
 
 export function loadConfig(): PanelConfig {
@@ -21,6 +23,7 @@ export function loadConfig(): PanelConfig {
     return {
       customerServiceUrl: parsed.customerServiceUrl || DEFAULT_CONFIG.customerServiceUrl,
       orderServiceUrl: parsed.orderServiceUrl || DEFAULT_CONFIG.orderServiceUrl,
+      restaurantServiceUrl: parsed.restaurantServiceUrl || DEFAULT_CONFIG.restaurantServiceUrl,
     };
   } catch {
     return { ...DEFAULT_CONFIG };

@@ -5,12 +5,14 @@ export default function ConfigForm() {
   const initial = loadConfig();
   const [customerServiceUrl, setCustomerServiceUrl] = useState(initial.customerServiceUrl);
   const [orderServiceUrl, setOrderServiceUrl] = useState(initial.orderServiceUrl);
+  const [restaurantServiceUrl, setRestaurantServiceUrl] = useState(initial.restaurantServiceUrl);
   const [savedMsg, setSavedMsg] = useState("");
 
   function handleSave() {
     saveConfig({
       customerServiceUrl: customerServiceUrl.trim(),
       orderServiceUrl: orderServiceUrl.trim(),
+      restaurantServiceUrl: restaurantServiceUrl.trim(),
     });
     setSavedMsg("Configuracion guardada.");
     setTimeout(() => setSavedMsg(""), 2000);
@@ -35,6 +37,15 @@ export default function ConfigForm() {
           type="text"
           value={orderServiceUrl}
           onChange={(e) => setOrderServiceUrl(e.target.value)}
+        />
+      </div>
+      <div className="field-row">
+        <label htmlFor="restaurantServiceUrl">URL restaurant-service</label>
+        <input
+          id="restaurantServiceUrl"
+          type="text"
+          value={restaurantServiceUrl}
+          onChange={(e) => setRestaurantServiceUrl(e.target.value)}
         />
       </div>
       <div className="field-row-actions">

@@ -24,6 +24,13 @@
             <groupId>com.food.ordering.system</groupId>
             <artifactId>common-application</artifactId>
         </dependency>
+        <!-- Read-only GET /orders (admin browse UI) queries OrderJpaRepository
+             directly, bypassing the domain layer - simple presentation, not a
+             write-path/saga concern. -->
+        <dependency>
+            <groupId>com.food.ordering.system</groupId>
+            <artifactId>order-dataaccess</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>

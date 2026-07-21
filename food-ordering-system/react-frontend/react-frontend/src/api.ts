@@ -4,11 +4,16 @@ import type {
   CreateCustomerResponse,
   CreateOrderCommand,
   CreateOrderResponse,
-  TrackOrderResponse,
+  CustomerSummary,
+  OrderSummary,
   ProblemDetail,
+  RestaurantSummary,
+  TrackOrderResponse,
 } from "./types";
 
 export interface ApiCallLog {
+  id: string;
+  timestamp: number;
   method: string;
   url: string;
   requestBody: unknown;
@@ -39,6 +44,8 @@ async function request<T>(method: string, baseUrl: string, path: string, body?: 
     });
   } catch (error) {
     logListener?.({
+      id: crypto.randomUUID(),
+      timestamp: Date.now(),
       method,
       url,
       requestBody: body ?? null,
@@ -59,6 +66,8 @@ async function request<T>(method: string, baseUrl: string, path: string, body?: 
   }
 
   logListener?.({
+    id: crypto.randomUUID(),
+    timestamp: Date.now(),
     method,
     url,
     requestBody: body ?? null,
@@ -87,4 +96,19 @@ export function createOrder(command: CreateOrderCommand): Promise<CreateOrderRes
 export function trackOrder(trackingId: string): Promise<TrackOrderResponse> {
   const { orderServiceUrl } = loadConfig();
   return request<TrackOrderResponse>("GET", orderServiceUrl, `/orders/${encodeURIComponent(trackingId)}`);
+}
+
+export function listCustomers(): Promise<CustomerSummary[]> {
+  const { customerServiceUrl } = loadConfig();
+  return request<CustomerSummary[]>("GET", customerServiceUrl, "/customers");
+}
+
+export function listOrders(): Promise<OrderSummary[]> {
+  const { orderServiceUrl } = loadConfig();
+  return request<OrderSummary[]>("GET", orderServiceUrl, "/orders");
+}
+
+export function listRestaurants(): Promise<RestaurantSummary[]> {
+  const { restaurantServiceUrl } = loadConfig();
+  return request<RestaurantSummary[]>("GET", restaurantServiceUrl, "/restaurants");
 }

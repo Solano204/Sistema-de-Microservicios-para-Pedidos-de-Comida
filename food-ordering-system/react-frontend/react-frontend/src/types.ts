@@ -54,3 +54,34 @@ export interface ProblemDetail {
   detail: string;
   instance?: string;
 }
+
+// Admin/browse read models (GET /customers, GET /orders, GET /restaurants).
+
+export interface CustomerSummary {
+  customerId: string;
+  username: string;
+  firstName: string;
+  lastName: string;
+}
+
+export interface OrderSummary {
+  orderTrackingId: string;
+  customerId: string;
+  restaurantId: string;
+  price: number;
+  orderStatus: OrderStatus;
+}
+
+export interface ProductSummary {
+  productId: string;
+  name: string;
+  price: number;
+  available: boolean;
+}
+
+export interface RestaurantSummary {
+  restaurantId: string;
+  name: string;
+  active: boolean;
+  products: ProductSummary[];
+}

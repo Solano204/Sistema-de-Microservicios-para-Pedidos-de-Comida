@@ -8,11 +8,9 @@ scrape_configs:
     static_configs:
       - targets: ["order-service:8181"]
 
-  - job_name: payment-service
-    metrics_path: /actuator/prometheus
-    static_configs:
-      - targets: ["payment-service:8182"]
-
+  # payment-service is still Kafka-consumer-only (no spring-boot-starter-web,
+  # no HTTP server) - nothing to scrape there. restaurant-service gained a
+  # thin read-only web layer (GET /restaurants), so it's back below.
   - job_name: restaurant-service
     metrics_path: /actuator/prometheus
     static_configs:

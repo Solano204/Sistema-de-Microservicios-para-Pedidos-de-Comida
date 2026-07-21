@@ -12,11 +12,12 @@ describe("ConfigForm", () => {
 
   afterEach(() => vi.useRealTimers());
 
-  it("pre-fills both inputs from the currently-saved config", () => {
+  it("pre-fills all three inputs from the currently-saved config", () => {
     render(<ConfigForm />);
 
     expect(screen.getByLabelText("URL customer-service")).toHaveValue("http://localhost:8184");
     expect(screen.getByLabelText("URL order-service")).toHaveValue("http://localhost:8181");
+    expect(screen.getByLabelText("URL restaurant-service")).toHaveValue("http://localhost:8183");
   });
 
   it("saving persists the trimmed URLs and shows a confirmation that clears after ~2s", async () => {

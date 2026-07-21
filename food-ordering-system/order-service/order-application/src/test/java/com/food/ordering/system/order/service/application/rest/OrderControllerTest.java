@@ -3,6 +3,8 @@ package com.food.ordering.system.order.service.application.rest;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.food.ordering.system.domain.valueobject.OrderStatus;
 import com.food.ordering.system.order.service.application.exception.handler.OrderGlobalExceptionHandler;
+import com.food.ordering.system.order.service.dataaccess.order.entity.OrderEntity;
+import com.food.ordering.system.order.service.dataaccess.order.repository.OrderJpaRepository;
 import com.food.ordering.system.order.service.domain.dto.create.CreateOrderCommand;
 import com.food.ordering.system.order.service.domain.dto.create.CreateOrderResponse;
 import com.food.ordering.system.order.service.domain.dto.create.OrderAddress;
@@ -32,8 +34,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class OrderControllerTest {
 
     private final OrderApplicationService orderApplicationService = mock(OrderApplicationService.class);
+    private final OrderJpaRepository orderJpaRepository = mock(OrderJpaRepository.class);
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
-    private final MockMvc mockMvc = MockMvcBuilders.standaloneSetup(new OrderController(orderApplicationService))
+    private final MockMvc mockMvc = MockMvcBuilders
+            .standaloneSetup(new OrderController(orderApplicationService, orderJpaRepository))
             .setControllerAdvice(new OrderGlobalExceptionHandler())
             .setMessageConverters(new MappingJackson2HttpMessageConverter(objectMapper))
             .build();
@@ -60,7 +64,7 @@ class OrderControllerTest {
 
     @BeforeEach
     void resetMock() {
-        org.mockito.Mockito.reset(orderApplicationService);
+        org.mockito.Mockito.reset(orderApplicationService, orderJpaRepository);
     }
 
     @Test
@@ -113,5 +117,37 @@ class OrderControllerTest {
 
         mockMvc.perform(get("/orders/{trackingId}", TRACKING_ID))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void getAllOrders_returnsEveryRowFromTheJpaRepository() throws Exception {
+        OrderEntity entity = OrderEntity.builder()
+                .id(UUID.randomUUID())
+                .customerId(CUSTOMER_ID)
+                .restaurantId(RESTAURANT_ID)
+                .trackingId(TRACKING_ID)
+                .price(new BigDecimal("50.00"))
+                .orderStatus(OrderStatus.PAID)
+                .failureMessages("")
+                .build();
+        when(orderJpaRepository.findAll()).thenReturn(List.of(entity));
+
+        mockMvc.perform(get("/orders"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].orderTrackingId").value(TRACKING_ID.toString()))
+                .andExpect(jsonPath("$[0].customerId").value(CUSTOMER_ID.toString()))
+                .andExpect(jsonPath("$[0].restaurantId").value(RESTAURANT_ID.toString()))
+                .andExpect(jsonPath("$[0].price").value(50.00))
+                .andExpect(jsonPath("$[0].orderStatus").value("PAID"));
+    }
+
+    @Test
+    void getAllOrders_returnsEmptyListWhenNoneExist() throws Exception {
+        when(orderJpaRepository.findAll()).thenReturn(List.of());
+
+        mockMvc.perform(get("/orders"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isArray())
+                .andExpect(jsonPath("$").isEmpty());
     }
 }

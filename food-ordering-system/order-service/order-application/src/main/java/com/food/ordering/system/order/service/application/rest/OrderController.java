@@ -1,5 +1,7 @@
 package com.food.ordering.system.order.service.application.rest;
 
+import com.food.ordering.system.order.service.dataaccess.order.entity.OrderEntity;
+import com.food.ordering.system.order.service.dataaccess.order.repository.OrderJpaRepository;
 import com.food.ordering.system.order.service.domain.dto.create.CreateOrderCommand;
 import com.food.ordering.system.order.service.domain.dto.create.CreateOrderResponse;
 import com.food.ordering.system.order.service.domain.dto.track.TrackOrderQuery;
@@ -13,7 +15,9 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.net.URI;
+import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Slf4j
 @RestController
@@ -22,9 +26,12 @@ import java.util.UUID;
 public class OrderController {
 
     private final OrderApplicationService orderApplicationService;
+    private final OrderJpaRepository orderJpaRepository;
 
-    public OrderController(OrderApplicationService orderApplicationService) {
+    public OrderController(OrderApplicationService orderApplicationService,
+                            OrderJpaRepository orderJpaRepository) {
         this.orderApplicationService = orderApplicationService;
+        this.orderJpaRepository = orderJpaRepository;
     }
 
     @Operation(summary = "Place an order",
@@ -53,5 +60,21 @@ public class OrderController {
                orderApplicationService.trackOrder(TrackOrderQuery.builder().orderTrackingId(trackingId).build());
        log.info("Returning order status with tracking id: {}", trackOrderResponse.getOrderTrackingId());
        return  ResponseEntity.ok(trackOrderResponse);
+    }
+
+    @Operation(summary = "List every order")
+    @GetMapping
+    public List<OrderSummaryResponse> getAllOrders() {
+        List<OrderEntity> orders = orderJpaRepository.findAll();
+        log.info("Returning {} orders", orders.size());
+        return orders.stream()
+                .map(entity -> OrderSummaryResponse.builder()
+                        .orderTrackingId(entity.getTrackingId())
+                        .customerId(entity.getCustomerId())
+                        .restaurantId(entity.getRestaurantId())
+                        .price(entity.getPrice())
+                        .orderStatus(entity.getOrderStatus())
+                        .build())
+                .collect(Collectors.toList());
     }
 }
