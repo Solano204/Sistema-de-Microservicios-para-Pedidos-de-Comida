@@ -1,53 +1,40 @@
 version: '3.8'
 
-# ── Doc 2 hardening notes ──────────────────────────────────────────────────
-# - Network: single network. Unlike a gateway-fronted system, nothing here
-#   calls out to the internet (no AWS/OpenAI-style dependency) and the
-#   services never call each other over REST - the saga is choreographed
-#   entirely through Kafka/Debezium. An edge/backend/data 3-tier split (as
-#   used in bigger systems) has no real edge component to justify it here.
-#   Marking this network `internal: true` would be the natural next step
-#   since nothing needs outbound internet - deliberately NOT doing that here:
-#   every service in this file also has a host `ports:` mapping, and whether
-#   published ports stay reliably reachable on an `internal: true` bridge
-#   network is inconsistent across Docker Engine/Desktop versions (known
-#   moby/moby reports of DNAT rules not being set up for internal networks).
-#   Getting that wrong would silently make every service unreachable from the
-#   host, and this can't be verified without running `docker compose up`,
-#   which is out of scope for this pass. Flagging as a candidate to test and
-#   flip yourself: try `internal: true`, confirm `localhost:8181` etc. still
-#   respond, keep it if so.
-# - Secrets: Postgres password now comes from a Docker secret file, not a
-#   plaintext env var. The 4 Spring services pick it up via Spring's native
-#   `configtree:` config-data import (Spring Boot 2.4+), not a custom
-#   entrypoint script - see the `SPRING_CONFIG_IMPORT` + `secrets:` block on
-#   each service. Fill in infrastructure/docker-compose/secrets/postgres_password.txt
-#   with your own value; it's gitignored.
-# - Debezium connectors are now registered by a dedicated one-shot service
-#   (debezium-connector-init) instead of a manually-run curl script - the old
-#   start-up.sh script pointed at `host.docker.internal`, which doesn't match
-#   this file's topology (Postgres runs as a container on this network, not
-#   on the Docker host). See register-connectors.sh for the PUT-based
-#   idempotent registration logic (same pattern as debezium/register.sh in
-#   the NEXUS reference project).
-# - Healthchecks + `condition: service_healthy` added throughout so
-#   `depends_on` actually waits for readiness, not just container start.
-# - `security_opt: no-new-privileges` added everywhere (cheap, no downside).
-#   Deferring `read_only`/`cap_drop: ALL` to the Dockerfile-hardening pass
-#   (Doc 3) until each service's actual filesystem/capability needs are
-#   confirmed.
-# - kafka-ui is behind the `observability` profile - it's an optional admin
-#   UI, not required for the saga to function.
-# - Skipped: separate compose.override.yml / prod split (Fase 9.2). This is a
-#   single local-dev environment with no separate deployment target today: a
-#   prod-only file would never actually be used. Revisit if/when this gets a
-#   real deployment target.
-# - Not fixed here: JVM heap sizing. These images are built via Spring Boot
-#   Buildpacks (see order-container/pom.xml's build-image goal), not a
-#   Dockerfile - Paketo's buildpack already runs a memory calculator that
-#   sizes the heap from the container's cgroup memory limit automatically, so
-#   setting `mem_limit` below is sufficient; no manual -XX:MaxRAMPercentage
-#   needed. Covered further in Doc 3.
+# ── food-ordering-system: PRODUCTION compose ────────────────────────────────
+# Sibling to docker-compose-food-ordering.yml (the local-dev file), not a
+# replacement for it. Same Kafka/Zipkin/Debezium/monitoring topology — this
+# file only changes what's appropriate for a real deployment target vs a
+# laptop:
+#
+#   - App service images come from ${ORDER_SERVICE_IMAGE}/etc. env vars,
+#     defaulting to the same local Buildpack image names the dev file uses
+#     (`mvn -pl <module> -am install` from food-ordering-system/, per each
+#     *-container/pom.xml's spring-boot-maven-plugin build-image goal).
+#     Point these at a registry instead (e.g. ghcr.io/<owner>/order-service:<tag>)
+#     by setting the corresponding env var in .env — nothing else in this
+#     file needs to change.
+#   - Zookeeper/Kafka brokers/Schema Registry/Postgres/Kafka Connect no
+#     longer publish host ports. Every container still reaches them over
+#     food-ordering-network by service name; the dev file publishes these
+#     for local tooling (psql, kafka console tools, curl-ing Schema
+#     Registry) that a real deployment target doesn't need exposed.
+#   - Trace sampling drops from 100% (dev) to 10% via
+#     MANAGEMENT_TRACING_SAMPLING_PROBABILITY, and app log level drops from
+#     DEBUG to INFO — both are exactly what TRACING_NOTES.md already flags
+#     ("100% in local dev - drop this before pointing at any shared/
+#     persistent environment").
+#   - Everything else (healthchecks, secrets, mem_limit/cpus, log rotation,
+#     no-new-privileges, the observability profile) is unchanged from the
+#     dev file — that file was already written prod-style.
+#
+# ONE-TIME SETUP:
+#   - Populate infrastructure/docker-compose/secrets/postgres_password.txt
+#     and secrets/grafana_password.txt (both gitignored).
+#   - If pointing *_IMAGE vars at a private registry: `docker login` first.
+#
+# USAGE:
+#   docker compose -f docker-compose-prod.yml --profile observability up -d
+# ═════════════════════════════════════════════════════════════════════════
 
 x-logging: &default-logging
   driver: json-file
@@ -71,8 +58,6 @@ services:
     image: postgres:17.2-alpine
     hostname: postgres
     container_name: postgres
-    ports:
-      - "5432:5432"
     environment:
       POSTGRES_DB: postgres
       POSTGRES_USER: postgres
@@ -111,8 +96,6 @@ services:
     image: confluentinc/cp-zookeeper:${KAFKA_VERSION:-7.2.5}
     hostname: zookeeper
     container_name: zookeeper
-    ports:
-      - "2181:2181"
     environment:
       ZOOKEEPER_SERVER_ID: 1
       ZOOKEEPER_CLIENT_PORT: 2181
@@ -132,9 +115,6 @@ services:
     logging: *default-logging
     <<: *default-security
     healthcheck:
-      # cub (Confluent Utility Belt) ships in every confluentinc image and is
-      # what Confluent's own tutorials use for readiness checks - more
-      # reliable than assuming `nc` is present in this specific image.
       test: ["CMD-SHELL", "cub zk-ready localhost:2181 5000 || exit 1"]
       interval: 10s
       timeout: 8s
@@ -149,13 +129,11 @@ services:
     depends_on:
       zookeeper:
         condition: service_healthy
-    ports:
-      - "19092:19092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-1:9092,LISTENER_LOCAL://localhost:19092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,LISTENER_LOCAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-1:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
@@ -186,13 +164,11 @@ services:
     depends_on:
       zookeeper:
         condition: service_healthy
-    ports:
-      - "29092:29092"
     environment:
       KAFKA_BROKER_ID: 2
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-2:9092,LISTENER_LOCAL://localhost:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,LISTENER_LOCAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-2:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
@@ -223,13 +199,11 @@ services:
     depends_on:
       zookeeper:
         condition: service_healthy
-    ports:
-      - "39092:39092"
     environment:
       KAFKA_BROKER_ID: 3
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-3:9092,LISTENER_LOCAL://localhost:39092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,LISTENER_LOCAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-3:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
@@ -265,14 +239,11 @@ services:
         condition: service_healthy
       kafka-broker-3:
         condition: service_healthy
-    ports:
-      - "8081:8081"
     environment:
       SCHEMA_REGISTRY_HOST_NAME: schema-registry
       SCHEMA_REGISTRY_KAFKASTORE_CONNECTION_URL: "zookeeper:2181"
       SCHEMA_REGISTRY_LISTENERS: http://schema-registry:8081
       SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka-broker-1:9092,PLAINTEXT://kafka-broker-2:9092,PLAINTEXT://kafka-broker-3:9092
-      SCHEMA_REGISTRY_DEBUG: "true"
     networks:
       - food-ordering-network
     restart: unless-stopped
@@ -306,8 +277,6 @@ services:
         condition: service_healthy
       schema-registry:
         condition: service_healthy
-    ports:
-      - "8083:8083"
     environment:
       CONNECT_GROUP_ID: "food-ordering-connect-cluster"
       CONNECT_CONFIG_STORAGE_TOPIC: "food-ordering-connect-configs"
@@ -339,12 +308,8 @@ services:
       retries: 10
       start_period: 40s
 
-  # Zipkin - in-memory storage (default), not Elasticsearch-backed like the
-  # NEXUS reference. NEXUS's ES-backed storage is sized for a much bigger,
-  # longer-lived multi-service platform; this project doesn't need trace data
-  # to survive a restart, and adding Elasticsearch here just to match NEXUS
-  # would be a real new piece of infrastructure to run for no corresponding
-  # benefit at this scale. Same image/port convention as NEXUS otherwise.
+  # Zipkin - in-memory storage, same as dev (see TRACING_NOTES.md for why
+  # this project doesn't need NEXUS's Elasticsearch-backed storage).
   zipkin:
     image: openzipkin/zipkin:3.3
     hostname: zipkin
@@ -366,8 +331,6 @@ services:
       start_period: 30s
 
   # One-shot: registers the 4 outbox connectors once Connect is healthy.
-  # Replaces the manual curl script in start-up.sh (which targeted a
-  # different, host-network-based topology).
   debezium-connector-init:
     image: curlimages/curl:8.10.1
     container_name: debezium-connector-init
@@ -389,7 +352,7 @@ services:
 
   # Order Service
   order-service:
-    image: com.food.ordering.system/order.service:1.0-SNAPSHOT
+    image: ${ORDER_SERVICE_IMAGE:-com.food.ordering.system/order.service:1.0-SNAPSHOT}
     hostname: order-service
     container_name: order-service
     depends_on:
@@ -411,6 +374,7 @@ services:
       SPRING_PROFILES_ACTIVE: docker
       SPRING_CONFIG_IMPORT: "optional:configtree:/run/secrets/"
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "0.1"
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/postgres?currentSchema=order&binaryTransfer=true&reWriteBatchedInserts=true
       SPRING_SQL_INIT_MODE: ALWAYS
       SPRING_SQL_INIT_SCHEMA_LOCATIONS: classpath:init-schema.sql
@@ -421,7 +385,7 @@ services:
       KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
       KAFKA_CONFIG_SCHEMA_REGISTRY_URL: http://schema-registry:8081
       SERVER_PORT: 8181
-      LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: DEBUG
+      LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: INFO
     networks:
       - food-ordering-network
     secrets:
@@ -441,7 +405,7 @@ services:
 
   # Payment Service
   payment-service:
-    image: com.food.ordering.system/payment.service:1.0-SNAPSHOT
+    image: ${PAYMENT_SERVICE_IMAGE:-com.food.ordering.system/payment.service:1.0-SNAPSHOT}
     hostname: payment-service
     container_name: payment-service
     depends_on:
@@ -463,6 +427,7 @@ services:
       SPRING_PROFILES_ACTIVE: docker
       SPRING_CONFIG_IMPORT: "optional:configtree:/run/secrets/"
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "0.1"
       SPRING_SQL_INIT_MODE: ALWAYS
       SPRING_SQL_INIT_SCHEMA_LOCATIONS: classpath:init-schema.sql,classpath:init-data.sql
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/postgres?currentSchema=payment&binaryTransfer=true&reWriteBatchedInserts=true&stringtype=unspecified&connectTimeout=60&socketTimeout=60
@@ -473,7 +438,7 @@ services:
       KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
       KAFKA_CONFIG_SCHEMA_REGISTRY_URL: http://schema-registry:8081
       SERVER_PORT: 8182
-      LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: DEBUG
+      LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: INFO
     networks:
       - food-ordering-network
     secrets:
@@ -493,7 +458,7 @@ services:
 
   # Restaurant Service
   restaurant-service:
-    image: com.food.ordering.system/restaurant.service:1.0-SNAPSHOT
+    image: ${RESTAURANT_SERVICE_IMAGE:-com.food.ordering.system/restaurant.service:1.0-SNAPSHOT}
     hostname: restaurant-service
     container_name: restaurant-service
     depends_on:
@@ -515,6 +480,7 @@ services:
       SPRING_PROFILES_ACTIVE: docker
       SPRING_CONFIG_IMPORT: "optional:configtree:/run/secrets/"
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "0.1"
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/postgres?currentSchema=restaurant&binaryTransfer=true&reWriteBatchedInserts=true&stringtype=unspecified&connectTimeout=60&socketTimeout=60
       SPRING_DATASOURCE_USERNAME: postgres
       SPRING_SQL_INIT_MODE: ALWAYS
@@ -525,7 +491,7 @@ services:
       KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
       KAFKA_CONFIG_SCHEMA_REGISTRY_URL: http://schema-registry:8081
       SERVER_PORT: 8183
-      LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: DEBUG
+      LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: INFO
     networks:
       - food-ordering-network
     secrets:
@@ -545,7 +511,7 @@ services:
 
   # Customer Service
   customer-service:
-    image: com.food.ordering.system/customer.service:1.0-SNAPSHOT
+    image: ${CUSTOMER_SERVICE_IMAGE:-com.food.ordering.system/customer.service:1.0-SNAPSHOT}
     hostname: customer-service
     container_name: customer-service
     depends_on:
@@ -567,6 +533,7 @@ services:
       SPRING_PROFILES_ACTIVE: docker
       SPRING_CONFIG_IMPORT: "optional:configtree:/run/secrets/"
       ZIPKIN_ENDPOINT: http://zipkin:9411/api/v2/spans
+      MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "0.1"
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/postgres?currentSchema=customer&binaryTransfer=true&reWriteBatchedInserts=true&connectTimeout=60&socketTimeout=60
       SPRING_DATASOURCE_USERNAME: postgres
       SPRING_SQL_INIT_MODE: ALWAYS
@@ -577,7 +544,7 @@ services:
       KAFKA_CONFIG_BOOTSTRAP_SERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
       KAFKA_CONFIG_SCHEMA_REGISTRY_URL: http://schema-registry:8081
       SERVER_PORT: 8184
-      LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: DEBUG
+      LOGGING_LEVEL_COM_FOOD_ORDERING_SYSTEM: INFO
     networks:
       - food-ordering-network
     secrets:
@@ -630,13 +597,6 @@ services:
     <<: *default-security
 
   # ── Monitoring (right-sized subset of NEXUS's stack — see MONITORING_NOTES.md) ──
-  # Prometheus + Grafana + postgres-exporter + cAdvisor. Skipped Loki and the
-  # other exporters: this project has one Postgres instance and no
-  # Mongo/Redis/Elasticsearch to scrape, so NEXUS's full exporter fleet has
-  # no corresponding target here.
-
-  # Postgres Exporter - server-side metrics (connections, replication slots,
-  # etc.) Prometheus can't get from each service's own client-side view.
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:v0.15.0
     hostname: postgres-exporter
@@ -648,11 +608,8 @@ services:
     environment:
       DATA_SOURCE_URI: "postgres:5432/postgres?sslmode=disable"
       DATA_SOURCE_USER: postgres
-      # postgres_exporter's own binary resolves *_FILE for this natively.
       DATA_SOURCE_PASS_FILE: /run/secrets/postgres_password
       PG_EXPORTER_AUTO_DISCOVER_DATABASES: "true"
-    ports:
-      - "9187:9187"
     networks:
       - food-ordering-network
     secrets:
@@ -663,13 +620,6 @@ services:
     logging: *default-logging
     <<: *default-security
 
-  # cAdvisor - per-container CPU/memory/network usage, so the mem_limit/cpus
-  # already set on every service here can be checked against real usage
-  # instead of just discovered after an OOM kill. Needs host-level mounts
-  # (privileged) to read container stats - a standard, deliberate exception
-  # to the no-new-privileges pattern the rest of this file follows, same as
-  # NEXUS's cadvisor. On Docker Desktop these host paths resolve inside the
-  # Desktop/WSL2 Linux VM, not raw Windows paths - no translation needed.
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     hostname: cadvisor
@@ -699,10 +649,6 @@ services:
       retries: 5
       start_period: 30s
 
-  # Prometheus - scrapes /actuator/prometheus from all 4 services plus
-  # postgres-exporter and cadvisor. Scrape config lives in
-  # ./monitoring/prometheus.yml (mounted read-only) so targets can be
-  # edited without rebuilding anything.
   prometheus:
     image: prom/prometheus:v2.51.0
     hostname: prometheus
@@ -731,9 +677,6 @@ services:
       retries: 3
       start_period: 30s
 
-  # Grafana - Prometheus datasource + dashboard provisioned from
-  # ./monitoring/grafana/provisioning (no manual click-through setup).
-  # Admin password via Docker secret, same pattern as postgres_password.
   grafana:
     image: grafana/grafana:10.4.0
     hostname: grafana
@@ -741,8 +684,6 @@ services:
     profiles: ["observability"]
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      # Grafana's env-provider only recognizes the double-underscore __FILE
-      # suffix - the single-underscore _FILE variant silently does nothing.
       GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_password
       GF_AUTH_ANONYMOUS_ENABLED: "false"
     volumes:
