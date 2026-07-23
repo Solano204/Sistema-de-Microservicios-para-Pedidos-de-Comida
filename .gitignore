@@ -1,0 +1,26 @@
+# Maven build output
+target/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.classpath
+.project
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Docker-compose local volumes
+**/docker-compose/volumes/
+
+# Frontend (Node/TypeScript)
+**/frontend/node_modules/
+**/frontend/dist/

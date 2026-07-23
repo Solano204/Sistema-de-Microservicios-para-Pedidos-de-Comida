@@ -7,6 +7,7 @@ import com.food.ordering.system.order.service.domain.valueobject.OrderItemId;
 import com.food.ordering.system.order.service.domain.valueobject.StreetAddress;
 import com.food.ordering.system.order.service.domain.valueobject.TrackingId;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -67,11 +68,14 @@ public class Order extends AggregateRoot<OrderId> {
     }
 
     private void updateFailureMessages(List<String> failureMessages) {
-        if (this.failureMessages != null && failureMessages != null) {
-            this.failureMessages.addAll(failureMessages.stream().filter(message -> !message.isEmpty()).toList());
+        if (failureMessages == null) {
+            return;
         }
-        if (this.failureMessages == null) {
-            this.failureMessages = failureMessages;
+        List<String> nonEmptyMessages = failureMessages.stream().filter(message -> !message.isEmpty()).toList();
+        if (this.failureMessages != null) {
+            this.failureMessages.addAll(nonEmptyMessages);
+        } else {
+            this.failureMessages = new ArrayList<>(nonEmptyMessages);
         }
     }
 

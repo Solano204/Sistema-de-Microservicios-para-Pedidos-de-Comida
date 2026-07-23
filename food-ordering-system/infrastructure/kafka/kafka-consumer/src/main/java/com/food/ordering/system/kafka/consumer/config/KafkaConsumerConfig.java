@@ -10,7 +10,10 @@ import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.config.KafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.listener.CommonErrorHandler;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.util.backoff.FixedBackOff;
 
 import java.io.Serializable;
 import java.util.HashMap;
@@ -60,6 +63,32 @@ public class KafkaConsumerConfig<K extends Serializable, V extends SpecificRecor
         factory.setConcurrency(kafkaConsumerConfigData.getConcurrencyLevel());
         factory.setAutoStartup(kafkaConsumerConfigData.getAutoStartup());
         factory.getContainerProperties().setPollTimeout(kafkaConsumerConfigData.getPollTimeoutMs());
+        factory.setCommonErrorHandler(kafkaErrorHandler());
+        // Same reasoning as KafkaProducerConfig.kafkaTemplate(): this
+        // container factory is hand-built, so Spring Boot's Kafka tracing
+        // auto-instrumentation doesn't apply automatically. This extracts
+        // whatever B3 headers a producer attached and continues that trace
+        // for the listener's span - but only for records this app's own
+        // KafkaTemplate produced (the customer-created event). It does NOT
+        // cover the 4 outbox/Debezium-CDC topics, since Debezium - not this
+        // app - is the actual producer for those; see Doc 8 tracing notes
+        // for what that needs.
+        factory.getContainerProperties().setObservationEnabled(true);
         return factory;
+    }
+
+    // Without this, listener error handling falls back on whatever Spring
+    // Kafka's implicit default is for this version - making it explicit
+    // instead: 3 retries, 1s apart, then log-and-skip so a single bad
+    // record (a "poison pill") can't wedge the whole partition forever.
+    // Not routing to a Kafka dead-letter topic here: that needs a
+    // KafkaTemplate, and not every service consuming through this shared
+    // factory (payment/restaurant/order) has kafka-producer on its
+    // classpath the way customer-service does - wiring a DLT recoverer
+    // blind risks a bean that fails to start on the services that lack it.
+    // Confirm producer availability per-service before adding one.
+    @Bean
+    public CommonErrorHandler kafkaErrorHandler() {
+        return new DefaultErrorHandler(new FixedBackOff(1000L, 3L));
     }
 }

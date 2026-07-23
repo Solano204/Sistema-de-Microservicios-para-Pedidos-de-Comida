@@ -1,0 +1,26 @@
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /food-ordering-system
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /food-ordering-system/react-frontend/react-frontend
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /food-ordering-system/react-frontend/react-frontend
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /food-ordering-system/infrastructure/docker-compose
+    schedule:
+      interval: weekly

@@ -36,6 +36,25 @@
             <groupId>com.food.ordering.system</groupId>
             <artifactId>customer-messaging</artifactId>
         </dependency>
+        <!-- Was missing entirely - the /actuator/health healthcheck added to
+             docker-compose-food-ordering.yml (Doc 2) had nothing to hit
+             without this. Also required for management.tracing.* below. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-brave</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.zipkin.reporter2</groupId>
+            <artifactId>zipkin-reporter-brave</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
     </dependencies>
 
    <build>

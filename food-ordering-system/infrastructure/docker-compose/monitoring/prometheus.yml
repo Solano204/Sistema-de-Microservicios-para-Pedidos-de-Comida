@@ -1,0 +1,34 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: order-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["order-service:8181"]
+
+  # payment-service is still Kafka-consumer-only (no spring-boot-starter-web,
+  # no HTTP server) - nothing to scrape there. restaurant-service gained a
+  # thin read-only web layer (GET /restaurants), so it's back below.
+  - job_name: restaurant-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["restaurant-service:8183"]
+
+  - job_name: customer-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["customer-service:8184"]
+
+  - job_name: postgres-exporter
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

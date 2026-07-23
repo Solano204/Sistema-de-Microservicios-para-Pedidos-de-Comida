@@ -1,1 +1,0 @@
-/usr/local/bin/postgres "-c" "max_connections=200" "-c" "max_replication_slots=4" "-c" "wal_level=logical"

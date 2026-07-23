@@ -1,0 +1,171 @@
+{
+  "info": {
+    "name": "food-ordering-system",
+    "description": "order-service (8181) + customer-service (8184). payment-service and restaurant-service have no REST surface - they're pure Kafka/outbox consumers, see SERVICES.md. Run 'Create customer' first, wait a few seconds for the customer Kafka event to reach order-service's local read-copy, then 'Create order' - its test script auto-captures trackingId for 'Track order'. Seeded restaurant/product/customer IDs below match restaurant-service's and payment-service's init-data.sql, so this runs against a freshly-started stack without any manual setup.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "order_service_url", "value": "http://localhost:8181" },
+    { "key": "customer_service_url", "value": "http://localhost:8184" },
+    { "key": "seeded_customer_id", "value": "d215b5f8-0249-4dc5-89a3-51fd148cfb41", "description": "Already has a 50000.00 credit_entry in payment-service's init-data.sql" },
+    { "key": "seeded_restaurant_id", "value": "d215b5f8-0249-4dc5-89a3-51fd148cfb45", "description": "restaurant_1, active=TRUE" },
+    { "key": "seeded_product_id", "value": "d215b5f8-0249-4dc5-89a3-51fd148cfb48", "description": "product_2, price 1.00, available=TRUE - the only available product on the active restaurant" },
+    { "key": "trackingId", "value": "", "description": "Auto-set by 'Create order's test script" },
+    { "key": "idempotencyKey", "value": "", "description": "Auto-set by 'Create order's pre-request script - one UUID per collection run" }
+  ],
+  "item": [
+    {
+      "name": "Customer Service",
+      "item": [
+        {
+          "name": "Create customer",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/vnd.api.v1+json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{seeded_customer_id}}\",\n  \"username\": \"jdoe\",\n  \"firstName\": \"John\",\n  \"lastName\": \"Doe\"\n}"
+            },
+            "url": {
+              "raw": "{{customer_service_url}}/customers",
+              "host": ["{{customer_service_url}}"],
+              "path": ["customers"]
+            },
+            "description": "customerId is client-supplied (see CreateCustomerCommand), not server-generated - using the same UUID payment-service's init-data.sql already has a credit_entry for, so a follow-up order against this customer has funds to be debited against.\n\nOn success: 201 Created + Location header (Doc 1 REST review - was 200 before). Publishes a `customer` Kafka event that order-service consumes to keep a local read-copy for order validation - give it a couple seconds before creating an order for this customer."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 201 Created', function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "pm.test('Location header present', function () {",
+                  "    pm.response.to.have.header('Location');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Order Service",
+      "item": [
+        {
+          "name": "Create order",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "application/vnd.api.v1+json" },
+              { "key": "Idempotency-Key", "value": "{{idempotencyKey}}", "description": "Added in Doc 1 - safe to retry this exact request with the same key if the connection drops; retrying returns the original response instead of creating a second order/payment debit." }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"customerId\": \"{{seeded_customer_id}}\",\n  \"restaurantId\": \"{{seeded_restaurant_id}}\",\n  \"price\": 1.00,\n  \"items\": [\n    {\n      \"productId\": \"{{seeded_product_id}}\",\n      \"quantity\": 1,\n      \"price\": 1.00,\n      \"subTotal\": 1.00\n    }\n  ],\n  \"address\": {\n    \"street\": \"123 Main St\",\n    \"postalCode\": \"1000AA\",\n    \"city\": \"Amsterdam\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{order_service_url}}/orders",
+              "host": ["{{order_service_url}}"],
+              "path": ["orders"]
+            },
+            "description": "Kicks off the choreographed saga: order PENDING -> payment debited -> PAID -> restaurant approval -> APPROVED. Response is immediate (just the initial PENDING order); poll 'Track order' to watch it progress as the saga's Kafka events land.\n\nOn success: 201 Created + Location header pointing at GET /orders/{trackingId} (Doc 1 - was 200 before)."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 201 Created', function () {",
+                  "    pm.response.to.have.status(201);",
+                  "});",
+                  "pm.test('Location header present', function () {",
+                  "    pm.response.to.have.header('Location');",
+                  "});",
+                  "const json = pm.response.json();",
+                  "if (json.orderTrackingId) {",
+                  "    pm.collectionVariables.set('trackingId', json.orderTrackingId);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Track order",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/vnd.api.v1+json" }
+            ],
+            "url": {
+              "raw": "{{order_service_url}}/orders/{{trackingId}}",
+              "host": ["{{order_service_url}}"],
+              "path": ["orders", "{{trackingId}}"]
+            },
+            "description": "Run 'Create order' first - it sets {{trackingId}} automatically. orderStatus cycles PENDING -> PAID -> APPROVED as the saga's Kafka/Debezium events land; re-run this a few times a couple seconds apart to watch it progress."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200 OK', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Track order - not found (error format example)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/vnd.api.v1+json" }
+            ],
+            "url": {
+              "raw": "{{order_service_url}}/orders/00000000-0000-0000-0000-000000000000",
+              "host": ["{{order_service_url}}"],
+              "path": ["orders", "00000000-0000-0000-0000-000000000000"]
+            },
+            "description": "Demonstrates the RFC 9457 Problem Details error shape (Doc 1) every endpoint now returns on failure: {type, title, status, detail, instance}, Content-Type: application/problem+json - not the old {code, message} shape."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 404 Not Found', function () {",
+                  "    pm.response.to.have.status(404);",
+                  "});",
+                  "pm.test('Body is RFC 9457 Problem Details', function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json).to.have.property('title');",
+                  "    pm.expect(json).to.have.property('detail');",
+                  "    pm.expect(json).to.have.property('status', 404);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
