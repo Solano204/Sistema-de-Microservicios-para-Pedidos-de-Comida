@@ -64,10 +64,12 @@
                <artifactId>spring-boot-maven-plugin</artifactId>
                <configuration>
                    <image>
-                       <name>${project.groupId}/customer.service:${project.version}</name>
-  <env>
+                       <!-- No <name> here: leaving it unset lets the spring-boot.build-image.imageName
+                            user property (passed via -D in CI) actually take effect. An explicit
+                            <name> here would silently override any -D value from the CLI. -->
+                       <env>
                             <BP_JVM_VERSION>17</BP_JVM_VERSION>
-                        </env> 
+                        </env>
                    </image>
                </configuration>
                <executions>
