@@ -31,7 +31,7 @@
         <maven.compiler.release>17</maven.compiler.release>
         <java.version>17</java.version>
         <!-- Updated to a newer version compatible with Java 17 -->
-        <maven-compiler-plugin.version>3.11.0</maven-compiler-plugin.version>
+        <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
         <!-- Fix for Java 17 compatibility - override Spring Boot's Lombok version -->
         <lombok.version>1.18.34</lombok.version>
         <mockito.version>5.2.0</mockito.version>
